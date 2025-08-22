@@ -182,3 +182,17 @@ cython_debug/
 aitk_db.db
 /notes.md
 /data
+aitool
+inferenced_images
+dd_prompts.txt
+config.yaml
+output_image_edit.png 
+rama_*
+gradio_app.py
+sd_1_*
+shivanvitha_*
+test.py
+tokens.json 
+qwen_image_edit_test.py 
+prompts 
+dummy_*
