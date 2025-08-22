@@ -9,35 +9,25 @@ import argparse
 from pathlib import Path
 import os
 from typing import List
+import time 
 
 '''
-HIP_VISIBLE_DEVICES=7 python3 inference_qwen_image_lora.py --model_path "Qwen/Qwen-Image" \
---transformer_lora_path /shareddata/dheyo/shivanvitha/ai-toolkit/output/aa_and_ab_qwen_image_1/aa_and_ab_qwen_image_1_LoRA_000007200.safetensors \
---tokenizer_path /shareddata/dheyo/shivanvitha/ai-toolkit/output/aa_and_ab_qwen_image_1/tokenizer_0_aa_and_ab_qwen_image_1__000007200 \
---text_encoder_path /shareddata/dheyo/shivanvitha/ai-toolkit/output/aa_and_ab_qwen_image_1/text_encoder_0_aa_and_ab_qwen_image_1__000007200 \
+HIP_VISIBLE_DEVICES=3 python3 inference_qwen_image_lora.py --model_path "Qwen/Qwen-Image" \
+--transformer_lora_path /shareddata/dheyo/shivanvitha/ai-toolkit/output/aa_and_ab_qwen_image_1/hub/models--shivmlops21--allu_arjun_and_alia_bhatt_1/snapshots/e3f588e48a4c67dff8dd173f5fb0343e86ddd405/aa_and_ab_qwen_image_1_LoRA_000007200.safetensors \
+--tokenizer_path /shareddata/dheyo/shivanvitha/ai-toolkit/output/aa_and_ab_qwen_image_1/hub/models--shivmlops21--allu_arjun_and_alia_bhatt_1/snapshots/e3f588e48a4c67dff8dd173f5fb0343e86ddd405/tokenizer_0_aa_and_ab_qwen_image_1__000007200 \
+--text_encoder_path /shareddata/dheyo/shivanvitha/ai-toolkit/output/aa_and_ab_qwen_image_1/hub/models--shivmlops21--allu_arjun_and_alia_bhatt_1/snapshots/e3f588e48a4c67dff8dd173f5fb0343e86ddd405/text_encoder_0_aa_and_ab_qwen_image_1__000007200 \
 --token_abstraction_json_path tokens.json \
 --num_inference_steps 50 \
---output_image_path inferenced_images/aa_and_ab_1024.png \
---prompts_path prompts/aa_and_ab_prompts.txt \
---aspect_ratio "1:1" \
---num_images_per_prompt 7
-
-
-HIP_VISIBLE_DEVICES=7 python3 inference_qwen_image_lora.py --model_path "Qwen/Qwen-Image" \
---transformer_lora_path /shareddata/dheyo/shivanvitha/ai-toolkit/output/aa_and_ab_qwen_image_1/aa_and_ab_qwen_image_1_LoRA_000007200.safetensors \
---tokenizer_path /shareddata/dheyo/shivanvitha/ai-toolkit/output/aa_and_ab_qwen_image_1/tokenizer_0_aa_and_ab_qwen_image_1__000007200 \
---text_encoder_path /shareddata/dheyo/shivanvitha/ai-toolkit/output/aa_and_ab_qwen_image_1/text_encoder_0_aa_and_ab_qwen_image_1__000007200 \
---token_abstraction_json_path tokens.json \
---num_inference_steps 50 \
---output_image_path inferenced_images/aa_1024.png \
---instruction "A photo of [A] man in prison, crying, wearing prison outfit with 420 written on his shirt" \
---aspect_ratio "1:1"
+--output_image_path inferenced_images/dd_scenes/dd_scene.png \
+--prompts_path /shareddata/dheyo/shivanvitha/ai-toolkit/dd_prompts.txt  \
+--aspect_ratio "16:9" \
+--num_images_per_prompt 8
 '''
 
 
 def parse_args() -> argparse.Namespace:
     """Parse command line arguments."""
-    parser = argparse.ArgumentParser(description="OmniGen2 image generation script.")
+    parser = argparse.ArgumentParser(description="Qwen-Image image generation script.")
     parser.add_argument(
         "--model_path", # "Qwen/Qwen-Image"
         type=str,
@@ -45,13 +35,13 @@ def parse_args() -> argparse.Namespace:
         help="Path to model checkpoint.",
     )
     parser.add_argument(
-        "--tokenizer_path", # /shareddata/dheyo/shivanvitha/ai-toolkit/output/aa_and_ab_qwen_image_1/tokenizer_0_aa_and_ab_qwen_image_1__000007200
+        "--tokenizer_path", # /shareddata/dheyo/shivanvitha/ai-toolkit/output/aa_and_ab_qwen_image_1/hub/models--shivmlops21--allu_arjun_and_alia_bhatt_1/snapshots/e3f588e48a4c67dff8dd173f5fb0343e86ddd405/tokenizer_0_aa_and_ab_qwen_image_1__000007200
         type=str,
         required=True,
         help="Path to updated tokenizer.",
     )
     parser.add_argument(
-        "--text_encoder_path", # /shareddata/dheyo/shivanvitha/ai-toolkit/output/aa_and_ab_qwen_image_1/text_encoder_0_aa_and_ab_qwen_image_1__000007200
+        "--text_encoder_path", # /shareddata/dheyo/shivanvitha/ai-toolkit/output/aa_and_ab_qwen_image_1/hub/models--shivmlops21--allu_arjun_and_alia_bhatt_1/snapshots/e3f588e48a4c67dff8dd173f5fb0343e86ddd405/text_encoder_0_aa_and_ab_qwen_image_1__000007200
         type=str,
         required=True,
         help="Path to text encoder checkpoint.",
@@ -157,7 +147,7 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-# lora_weights_path = "/shareddata/dheyo/shivanvitha/ai-toolkit/output/aa_and_ab_qwen_image_1"
+# lora_weights_path = "/shareddata/dheyo/shivanvitha/ai-toolkit/output/aa_and_ab_qwen_image_1/hub/models--shivmlops21--allu_arjun_and_alia_bhatt_1/snapshots/e3f588e48a4c67dff8dd173f5fb0343e86ddd405"
 
 def convert_lora_weights_before_load(state_dict, new_path):
     popped_key = state_dict.pop("emb_params")
@@ -256,8 +246,10 @@ def main (args:argparse.Namespace, prompts: List) -> None:
         ).images
 
         os.makedirs(os.path.dirname(args.output_image_path), exist_ok=True)
+        timestamp = str(time.strftime("%d-%m-%y_%H-%M-%S"))
+
         for image_id, image in enumerate(images):
-            file_path = f"{args.output_image_path.replace('.png', '')}_{idx}_{image_id}.png"
+            file_path = f"{args.output_image_path.replace('.png', '')}_{idx}_{image_id}_{timestamp}.png"
             image.save(file_path)
             print(f"Saved {file_path}")
 
