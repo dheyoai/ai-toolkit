@@ -293,7 +293,22 @@ export const modelArchs: ModelArch[] = [
       // default updates when [selected, unselected] in the UI
       'config.process[0].model.name_or_path': ['stable-diffusion-v1-5/stable-diffusion-v1-5', defaultNameOrPath],
       'config.process[0].sample.sampler': ['ddpm', 'flowmatch'],
-      'config.process[0].train.noise_scheduler': ['ddpm', 'flowmatch'],
+      'config.process[0].train.noise_scheduler': ['ddim', 'ddpm', 'flowmatch'],
+      'config.process[0].sample.width': [512, 1024],
+      'config.process[0].sample.height': [512, 1024],
+      'config.process[0].sample.guidance_scale': [6, 4],
+    },
+    disableSections: ['model.quantize', 'train.timestep_type'],
+  },
+  {
+    name: 'realvizv5',
+    label: 'Realistic Vision V5 no VAE',
+    group: 'image',
+    defaults: {
+      // default updates when [selected, unselected] in the UI
+      'config.process[0].model.name_or_path': ['SG161222/Realistic_Vision_V5.1_noVAE', defaultNameOrPath],
+      'config.process[0].sample.sampler': ['ddim', 'ddpm', 'flowmatch'],
+      'config.process[0].train.noise_scheduler': ['ddim', 'ddpm', 'flowmatch'],
       'config.process[0].sample.width': [512, 1024],
       'config.process[0].sample.height': [512, 1024],
       'config.process[0].sample.guidance_scale': [6, 4],

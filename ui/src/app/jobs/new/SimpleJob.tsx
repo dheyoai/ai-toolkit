@@ -376,6 +376,7 @@ export default function SimpleJob({
                   value={jobConfig.config.process[0].train.noise_scheduler}
                   onChange={value => setJobConfig(value, 'config.process[0].train.noise_scheduler')}
                   options={[
+                    { value: 'ddim', label: 'DDIM' },
                     { value: 'flowmatch', label: 'FlowMatch' },
                     { value: 'ddpm', label: 'DDPM' },
                   ]}
@@ -652,6 +653,8 @@ export default function SimpleJob({
                   options={[
                     { value: 'flowmatch', label: 'FlowMatch' },
                     { value: 'ddpm', label: 'DDPM' },
+                    { value: 'ddim', label: 'DDIM' }
+
                   ]}
                 />
                 <NumberInput

@@ -1560,6 +1560,7 @@ class BaseSDTrainProcess(BaseTrainProcess):
             custom_pipeline=self.custom_pipeline,
             noise_scheduler=sampler,
         )
+
         
         self.hook_after_sd_init_before_load()
         # run base sd process run
@@ -1575,6 +1576,8 @@ class BaseSDTrainProcess(BaseTrainProcess):
         tokenizer = self.sd.tokenizer
         text_encoder = self.sd.text_encoder
         noise_scheduler = self.sd.noise_scheduler
+
+        # import pdb; pdb.set_trace()
 
         if self.train_config.xformers:
             vae.enable_xformers_memory_efficient_attention()
