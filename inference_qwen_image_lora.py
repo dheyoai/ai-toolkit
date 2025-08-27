@@ -11,18 +11,6 @@ import os
 from typing import List
 import time 
 
-'''
-HIP_VISIBLE_DEVICES=3 python3 inference_qwen_image_lora.py --model_path "Qwen/Qwen-Image" \
---transformer_lora_path /shareddata/dheyo/shivanvitha/ai-toolkit/output/aa_and_ab_qwen_image_1/hub/models--shivmlops21--allu_arjun_and_alia_bhatt_1/snapshots/e3f588e48a4c67dff8dd173f5fb0343e86ddd405/aa_and_ab_qwen_image_1_LoRA_000007200.safetensors \
---tokenizer_path /shareddata/dheyo/shivanvitha/ai-toolkit/output/aa_and_ab_qwen_image_1/hub/models--shivmlops21--allu_arjun_and_alia_bhatt_1/snapshots/e3f588e48a4c67dff8dd173f5fb0343e86ddd405/tokenizer_0_aa_and_ab_qwen_image_1__000007200 \
---text_encoder_path /shareddata/dheyo/shivanvitha/ai-toolkit/output/aa_and_ab_qwen_image_1/hub/models--shivmlops21--allu_arjun_and_alia_bhatt_1/snapshots/e3f588e48a4c67dff8dd173f5fb0343e86ddd405/text_encoder_0_aa_and_ab_qwen_image_1__000007200 \
---token_abstraction_json_path tokens.json \
---num_inference_steps 50 \
---output_image_path inferenced_images/dd_scenes/dd_scene.png \
---prompts_path /shareddata/dheyo/shivanvitha/ai-toolkit/dd_prompts.txt  \
---aspect_ratio "16:9" \
---num_images_per_prompt 8
-'''
 
 
 def parse_args() -> argparse.Namespace:
@@ -37,13 +25,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--tokenizer_path", # /shareddata/dheyo/shivanvitha/ai-toolkit/output/aa_and_ab_qwen_image_1/hub/models--shivmlops21--allu_arjun_and_alia_bhatt_1/snapshots/e3f588e48a4c67dff8dd173f5fb0343e86ddd405/tokenizer_0_aa_and_ab_qwen_image_1__000007200
         type=str,
-        required=True,
+        default=None,
         help="Path to updated tokenizer.",
     )
     parser.add_argument(
         "--text_encoder_path", # /shareddata/dheyo/shivanvitha/ai-toolkit/output/aa_and_ab_qwen_image_1/hub/models--shivmlops21--allu_arjun_and_alia_bhatt_1/snapshots/e3f588e48a4c67dff8dd173f5fb0343e86ddd405/text_encoder_0_aa_and_ab_qwen_image_1__000007200
         type=str,
-        required=True,
+        default=None,
         help="Path to text encoder checkpoint.",
     )
     parser.add_argument(
@@ -149,8 +137,9 @@ def parse_args() -> argparse.Namespace:
 
 # lora_weights_path = "/shareddata/dheyo/shivanvitha/ai-toolkit/output/aa_and_ab_qwen_image_1/hub/models--shivmlops21--allu_arjun_and_alia_bhatt_1/snapshots/e3f588e48a4c67dff8dd173f5fb0343e86ddd405"
 
-def convert_lora_weights_before_load(state_dict, new_path):
-    popped_key = state_dict.pop("emb_params")
+def convert_lora_weights_before_load(args:argparse.Namespace, state_dict, new_path):
+    if args.token_abstraction_json_path:
+        popped_key = state_dict.pop("emb_params")
     new_sd = {}
     for key, value in state_dict.items():
         new_key = key.replace("diffusion_model.", "transformer.")
@@ -171,7 +160,7 @@ def load_pipeline (args:argparse.Namespace):
     else:
         torch_dtype = torch.float32
         device = "cpu"
-
+    
     pipe = QwenImagePipeline.from_pretrained(args.model_path, torch_dtype=torch_dtype)
     pipe = pipe.to(device)
 
@@ -184,26 +173,25 @@ def load_pipeline (args:argparse.Namespace):
     if not os.path.exists(new_path):
         print(f"Creating {new_path}...")
         state_dict = load_file(f"{args.transformer_lora_path}")
-        state_dict = convert_lora_weights_before_load(state_dict, new_path)
+        state_dict = convert_lora_weights_before_load(args, state_dict, new_path)
 
     pipe.load_lora_weights(dir_path, weight_name=cleaned_safetensors_file)
 
 
     # loading new tokenizer and text encoder here!!!!
-    tokenizer = AutoTokenizer.from_pretrained(args.tokenizer_path)
+    if args.tokenizer_path and args.text_encoder_path:
+        tokenizer = AutoTokenizer.from_pretrained(args.tokenizer_path)
 
-    text_encoder = TextEncoder.from_pretrained(args.text_encoder_path,
-                                            ignore_mismatched_sizes=True,
-                                            torch_dtype=torch_dtype).to(device)
+        text_encoder = TextEncoder.from_pretrained(args.text_encoder_path,
+                                                ignore_mismatched_sizes=True,
+                                                torch_dtype=torch_dtype).to(device)
 
-    text_encoder.resize_token_embeddings(len(tokenizer))
-    pipe.tokenizer = tokenizer
+        text_encoder.resize_token_embeddings(len(tokenizer))
+        pipe.tokenizer = tokenizer
 
-    pipe.text_encoder = text_encoder # verify the placement thoroughly to check if new tokens embeddings are loaded
+        pipe.text_encoder = text_encoder 
 
     return pipe
-
-
 
 def main (args:argparse.Namespace, prompts: List) -> None:
     pipe = load_pipeline(args)
@@ -211,10 +199,11 @@ def main (args:argparse.Namespace, prompts: List) -> None:
         "en": "Ultra HD, 4K, cinematic composition." # for english prompt
     }
 
-    with open(args.token_abstraction_json_path, "r") as file:
-        representation_tokens = json.load(file)
+    if args.token_abstraction_json_path:
+        with open(args.token_abstraction_json_path, "r") as file:
+            representation_tokens = json.load(file)
 
-    special_tokens = list(representation_tokens.keys())
+        special_tokens = list(representation_tokens.keys())
 
     aspect_ratios = {
         "1:1": (1024, 1024),
@@ -229,8 +218,9 @@ def main (args:argparse.Namespace, prompts: List) -> None:
     width, height = aspect_ratios[args.aspect_ratio]
 
     for idx, prompt in enumerate(prompts):
-        for special_token in special_tokens:
-            prompt = prompt.replace(special_token, representation_tokens[special_token][0].replace(" ", ''))
+        if args.token_abstraction_json_path:
+            for special_token in special_tokens:
+                prompt = prompt.replace(special_token, representation_tokens[special_token][0].replace(" ", ''))
 
         print(prompt)
 
