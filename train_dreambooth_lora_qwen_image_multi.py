@@ -881,25 +881,7 @@ class DreamBoothDataset(Dataset):
             instance_image = self.pixel_values[i][index % self.num_instance_images[i]]
             example[f"instance_images_{i}"] = instance_image
 
-            # Read caption from corresponding .txt file
-            if hasattr(self, 'image_paths') and len(self.image_paths[i]) > 0:
-                image_path = self.image_paths[i][index % self.num_instance_images[i]]
-                caption_path = image_path.with_suffix('.txt')
-                
-                if caption_path.exists():
-                    try:
-                        with open(caption_path, 'r', encoding='utf-8') as f:
-                            caption = f.read().strip()
-                        if caption:
-                            example[f"instance_prompt_{i}"] = caption
-                        else:
-                            example[f"instance_prompt_{i}"] = self.instance_prompt[i]
-                    except Exception as e:
-                        logger.warning(f"Could not read caption file {caption_path}: {e}")
-                        example[f"instance_prompt_{i}"] = self.instance_prompt[i]
-                else:
-                    example[f"instance_prompt_{i}"] = self.instance_prompt[i]
-            elif self.custom_instance_prompts and len(self.custom_instance_prompts[i]) > 0:
+            if self.custom_instance_prompts and len(self.custom_instance_prompts[i]) > 0:
                 caption = self.custom_instance_prompts[i][index % self.num_instance_images[i]]
                 if caption:
                     example[f"instance_prompt_{i}"] = caption
@@ -1213,7 +1195,15 @@ def main(args):
     if args.lora_layers is not None:
         target_modules = [layer.strip() for layer in args.lora_layers.split(",")]
     else:
-        target_modules = ["to_k", "to_q", "to_v", "to_out.0"]
+        # Apply LoRA to all linear layers in the transformer
+        target_modules = []
+        for name, module in transformer.named_modules():
+            if isinstance(module, torch.nn.Linear):
+                layer_name = name.split('.')[-1]
+                if layer_name not in target_modules:
+                    target_modules.append(layer_name)
+        
+        print(f"Applying LoRA to these layer types: {target_modules}")
 
     # now we will add new LoRA weights the transformer layers
     transformer_lora_config = LoraConfig(
@@ -1436,8 +1426,17 @@ def main(args):
                         "num_images": validation_number_images[len(validation_embeddings_list)] if len(validation_embeddings_list) < len(validation_number_images) else args.num_validation_images
                     })
 
-    # Store embeddings for dynamic use during training instead of concatenating
-    # We'll handle them dynamically in the training loop
+    # Pack the statically computed variables appropriately here
+    all_instance_embeds = torch.cat([embeds[0] for embeds in instance_embeddings_list], dim=0)
+    all_instance_masks = torch.cat([embeds[1] for embeds in instance_embeddings_list], dim=0)
+    if args.with_prior_preservation:
+        all_class_embeds = torch.cat([embeds[0] for embeds in class_embeddings_list], dim=0)
+        all_class_masks = torch.cat([embeds[1] for embeds in class_embeddings_list], dim=0)
+        prompt_embeds = torch.cat([all_instance_embeds, all_class_embeds], dim=0)
+        prompt_embeds_mask = torch.cat([all_instance_masks, all_class_masks], dim=0)
+    else:
+        prompt_embeds = all_instance_embeds
+        prompt_embeds_mask = all_instance_masks
 
     # if cache_latents is set to True, we encode images to latents and store them.
     precompute_latents = args.cache_latents
@@ -1564,58 +1563,14 @@ def main(args):
             prompts = batch["prompts"]
 
             with accelerator.accumulate(models_to_accumulate):
-                # Handle embeddings dynamically for each batch
-                prompts = batch["prompts"]
+                # Use pre-computed embeddings
+                num_subjects = len(instance_prompt)
+                batch_size = len(prompts)
+                samples_per_subject = batch_size // (2 if args.with_prior_preservation else 1) // num_subjects
                 
-                # For multi-subject training, we need to encode each prompt individually
-                # since they may have different sequence lengths
-                batch_prompt_embeds_list = []
-                batch_prompt_embeds_mask_list = []
-                
-                # Process each prompt in the batch
-                for prompt in prompts:
-                    # Find which subject this prompt belongs to by checking trigger tokens
-                    subject_idx = 0  # default
-                    for i, instance_p in enumerate(instance_prompt):
-                        if any(token in prompt for token in ['[AB]', '[A]']):  # Check for our specific tokens
-                            if '[AB]' in prompt and '[AB]' in instance_p:
-                                subject_idx = i
-                                break
-                            elif '[A]' in prompt and '[A]' in instance_p:
-                                subject_idx = i
-                                break
-                    
-                    # Use pre-computed embeddings for the identified subject
-                    if subject_idx < len(instance_embeddings_list):
-                        embeds, mask = instance_embeddings_list[subject_idx]
-                    else:
-                        # Fallback: compute embeddings on the fly
-                        with offload_models(text_encoding_pipeline, device=accelerator.device, offload=args.offload):
-                            embeds, mask = compute_text_embeddings(prompt, text_encoding_pipeline)
-                    
-                    batch_prompt_embeds_list.append(embeds)
-                    batch_prompt_embeds_mask_list.append(mask)
-                
-                # Pad sequences to the same length for batching
-                max_seq_len = max(mask.shape[1] for mask in batch_prompt_embeds_mask_list)
-                
-                padded_embeds = []
-                padded_masks = []
-                for embeds, mask in zip(batch_prompt_embeds_list, batch_prompt_embeds_mask_list):
-                    if embeds.shape[1] < max_seq_len:
-                        # Pad embeddings and masks
-                        pad_size = max_seq_len - embeds.shape[1]
-                        embeds_padded = torch.nn.functional.pad(embeds, (0, 0, 0, pad_size), value=0)
-                        mask_padded = torch.nn.functional.pad(mask, (0, pad_size), value=0)
-                    else:
-                        embeds_padded = embeds
-                        mask_padded = mask
-                    
-                    padded_embeds.append(embeds_padded)
-                    padded_masks.append(mask_padded)
-                
-                batch_prompt_embeds = torch.cat(padded_embeds, dim=0)
-                batch_prompt_embeds_mask = torch.cat(padded_masks, dim=0)
+                # Create embeddings for this batch
+                batch_prompt_embeds = prompt_embeds.repeat(samples_per_subject, 1, 1)
+                batch_prompt_embeds_mask = prompt_embeds_mask.repeat(samples_per_subject, 1)
 
                 # Convert images to latent space
                 if args.cache_latents:
