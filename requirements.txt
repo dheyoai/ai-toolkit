@@ -1,6 +1,6 @@
 safetensors
 git+https://github.com/jaretburkett/easy_dwpose.git
-git+ssh://git@github.com/dheyoai/diffusers.git@dheyo_qwen_image 
+git+https://github.com/dheyoai/diffusers.git@dheyo_qwen_image
 transformers==4.52.4
 lycoris-lora==1.8.3
 flatten_json
