@@ -1,17 +1,16 @@
 ---
 job: extension
 config:
-  # This name will be the folder for your training outputs and the base filename for saved models.
-  name: "adalora_alia_bhatt" # Unique name for your AdaLoRA training run
+  name: "adalora_alia_bhatt"
   process:
     - type: 'sd_trainer'
       training_folder: "/root/varunika/img/ai-toolkit/output"
       log_dir: "/root/varunika/img/ai-toolkit/output/adalora_alia_bhatt/tensorboard"
-      device: cuda:0 # Assuming you want to use the first CUDA-enabled GPU
-      performance_log_every: 10 # Log performance stats every 10 steps
+      device: cuda:1
+      performance_log_every: 10
 
       network:
-        type: "adalora" # <--- IMPORTANT: This tells the code to use AdaLoRA
+        type: "adalora"
         linear: 32 # Corresponds to `r` (max rank) in AdaLoraConfig (max rank for LoRA adapters)
         linear_alpha: 32 # Corresponds to `lora_alpha`
         lora_dropout: 0.0 # Dropout rate for AdaLoRA layers
@@ -23,56 +22,50 @@ config:
         # tinit: Steps of initial fine-tuning warmup. (e.g., total_step // 4)
         adalora_tinit: 500 # If train.steps is 2000, this is 2000 // 4
         # tfinal: Number of steps of final fine-tuning. (e.g., 3 * total_step // 4)
-        adalora_tfinal: 1500 # If train.steps is 2000, this is 3 * 2000 // 4
+        adalora_tfinal: 250 # If train.steps is 2000, this is 3 * 2000 // 4
         adalora_deltaT: 10 # deltaT: Time interval between two budget allocations.
         adalora_beta1: 0.85 # beta1: EMA parameter 1 for sensitivity smoothing.
         adalora_beta2: 0.85 # beta2: EMA parameter 2 for uncertainty quantification.
         adalora_orth_reg_weight: 0.5 # orth_reg_weight: Coefficient of orthogonal regularization.
         
         network_kwargs:
-          # For Qwen-Image's transformer, PEFT often targets specific module names.
-          # The `lora_special.py` code will default to `["to_k", "to_q", "to_v", "to_out.0"]`
-          # if `target_lin_modules` is not explicitly provided.
-          # If your `only_if_contains` in previous configs worked for LoRA, keep it.
-          # For AdaLoRA, direct module names are often preferred by PEFT.
-          only_if_contains: # Keep this if you want it to filter the default target_modules further
-            - ".*attn.*" # Target attention layers (adjust if your model has different naming)
+          only_if_contains: 
+            - ".*attn.*" 
 
       save:
-        dtype: bf16 # Precision to save the model (bfloat16)
-        save_every: 250 # Save a checkpoint every 250 steps
-        max_step_saves_to_keep: 4 # Keep the last 4 checkpoints
-        save_format: diffusers # Save in Diffusers format (PEFT models are saved in diffusers structure)
-        push_to_hub: false # Do not push to Hugging Face Hub
+        dtype: bf16 
+        save_every: 250
+        max_step_saves_to_keep: 4 
+        save_format: diffusers
+        push_to_hub: false 
 
       datasets:
-        # !! IMPORTANT: Update this to your ACTUAL dataset directory path !!
         - folder_path: "/root/varunika/img/datasets/datasets/alia_bhatt"
-          trigger_token: '[AB]' # The special token used in your captions for Alia Bhatt
+          trigger_token: '[AB]'
           initializer_concept: "A 34 year old Indian woman, 5 feet 1 inch tall, fair skin, slim build, slim jawline, dimples on cheeks"
           caption_ext: txt
           cache_latents_to_disk: false
           resolution:
           - 512
           - 768
-          - 1024 # Use multiple resolutions as suggested for Flux
+          - 1024
 
       train:
-        batch_size: 2
-        steps: 2000 # Total number of training steps (this value is used as `total_training_steps` for AdaLoRA)
-        gradient_accumulation: 1
-        train_unet: true # Train the UNet (Diffusion Transformer)
-        train_text_encoder: false # Set to true if you want to train the Text Encoder with AdaLoRA
-        gradient_checkpointing: true # Enable to save VRAM
+        batch_size: 1
+        steps: 2000
+        gradient_accumulation: 2
+        train_unet: true 
+        train_text_encoder: false
+        gradient_checkpointing: true 
         noise_scheduler: flowmatch
-        optimizer: adamw # Or adamw8bit if bnb is available
+        optimizer: adamw8bit
         lr: 0.0001
         ema_config:
           use_ema: false
         dtype: bf16
 
       model:
-        name_or_path: "Qwen/Qwen-Image" # Base model to fine-tune
+        name_or_path: "Qwen/Qwen-Image" 
         quantize: false
         arch: qwen_image
 

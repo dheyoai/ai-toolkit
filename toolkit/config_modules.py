@@ -170,6 +170,7 @@ class NetworkConfig:
         self.dropout: Optional[float] = kwargs.get('dropout', None)
         self.rank_dropout: Optional[float] = kwargs.get('rank_dropout', None)
         self.module_dropout: Optional[float] = kwargs.get('module_dropout', None)
+        self.lora_dropout: float = kwargs.get('lora_dropout', 0.0)
         
         self.network_kwargs: dict = kwargs.get('network_kwargs', {})
 

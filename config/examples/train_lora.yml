@@ -1,0 +1,81 @@
+---
+job: extension
+config:
+  # This name will be the folder for your training outputs and the base filename for saved models.
+  name: "lora_alia_bhatt_baseline" # <--- MODIFIED: Changed name to reflect LoRA baseline
+  process:
+    - type: 'sd_trainer'
+      # Absolute path to save your training sessions, samples, and weights.
+      # !! IMPORTANT: Update this to your ACTUAL output directory path !!
+      training_folder: "/root/varunika/img/ai-toolkit/output"
+      # Directory for TensorBoard logs, within your training output folder.
+      log_dir: "/root/varunika/img/ai-toolkit/output/lora_alia_bhatt_baseline/tensorboard" # <--- MODIFIED: Updated log_dir name
+      device: cuda:0 
+      performance_log_every: 10
+
+      network:
+        type: "lora" # <--- MODIFIED: Changed type from "adalora" to "lora"
+        linear: 32 # LoRA rank for linear layers
+        linear_alpha: 32 # LoRA alpha for linear layers
+        lora_dropout: 0.0 # Dropout rate for LoRA layers (optional, set to 0.0 for baseline)
+        
+        # --- REMOVED: All AdaLoRA specific parameters (adalora_target_r, adalora_init_r, etc.) ---
+        
+        network_kwargs:
+          # `only_if_contains` is still relevant for selecting which layers LoRA should modify.
+          only_if_contains: 
+            - ".*attn.*" 
+
+      save:
+        dtype: bf16 
+        save_every: 250
+        max_step_saves_to_keep: 4 
+        save_format: diffusers # Diffusers format is good for LoRA as well
+        push_to_hub: false 
+
+      datasets:
+        - folder_path: "/root/varunika/img/datasets/datasets/alia_bhatt" # !! IMPORTANT: Update this to your ACTUAL dataset directory path !!
+          trigger_token: '[AB]'
+          initializer_concept: "A 34 year old Indian woman, 5 feet 1 inch tall, fair skin, slim build, slim jawline, dimples on cheeks"
+          caption_ext: txt
+          cache_latents_to_disk: false
+          resolution:
+          - 512
+          - 768
+          - 1024
+
+      train:
+        batch_size: 1
+        steps: 2000
+        gradient_accumulation: 2
+        train_unet: true 
+        train_text_encoder: false
+        gradient_checkpointing: true 
+        noise_scheduler: flowmatch
+        optimizer: adamw8bit # Keep adamw8bit for memory efficiency
+        lr: 0.0001
+        ema_config:
+          use_ema: false
+        dtype: bf16
+
+      model:
+        name_or_path: "Qwen/Qwen-Image" 
+        quantize: false
+        arch: qwen_image
+
+      sample:
+        sampler: flowmatch
+        sample_every: 250
+        width: 1664
+        height: 928
+        prompts:
+          - "A close-up portrait of ([AB] woman) smiling, soft natural light, bokeh background."
+          - "A full-body shot of ([AB] woman) walking in a bustling city street, vibrant atmosphere."
+        neg: ''
+        seed: 42
+        guidance_scale: 4
+        sample_steps: 25
+
+meta:
+  name: "lora_alia_bhatt_baseline" # <--- MODIFIED: Updated meta name
+  version: '1.0'

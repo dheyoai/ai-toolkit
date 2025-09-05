@@ -1841,6 +1841,8 @@ class BaseSDTrainProcess(BaseTrainProcess):
                 config = {
                     'text_encoder_lr': self.train_config.lr,
                     'unet_lr': self.train_config.lr,
+                    'default_lr': self.train_config.lr,
+                    
                 }
                 # `self.network.prepare_optimizer_params` will now return params for PEFT model if AdaLoRA
                 params_net = self.network.prepare_optimizer_params(

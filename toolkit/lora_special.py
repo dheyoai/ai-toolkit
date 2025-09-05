@@ -704,9 +704,8 @@ class LoRASpecialNetwork(ToolkitNetworkMixin, LoRANetwork):
         else:
             # Existing apply_to logic for LoRA/DoRA/LoKr
             super().apply_to(text_encoder_modules, unet_module, train_text_encoder, train_unet)
-    # --- NEW apply_to METHOD FOR ADALORA (end) ---
 
-    def prepare_optimizer_params(self, text_encoder_lr, unet_lr, default_lr):
+    def prepare_optimizer_params(self, text_encoder_lr, unet_lr, default_lr): # Keep default_lr in signature
         if self.is_adalora:
             params = []
             if self.adalora_unet_model:
@@ -719,7 +718,8 @@ class LoRASpecialNetwork(ToolkitNetworkMixin, LoRANetwork):
                     params.append({"lr": text_encoder_lr, "params": list(self.adalora_text_encoder_model.parameters())})
             return params
         else:
-            # call Lora prepare_optimizer_params
+        # call Lora prepare_optimizer_params
+        # The super().prepare_optimizer_params expects default_lr, so it's fine as is.
             all_params = super().prepare_optimizer_params(text_encoder_lr, unet_lr, default_lr)
 
             if self.full_train_in_out:
@@ -733,7 +733,6 @@ class LoRASpecialNetwork(ToolkitNetworkMixin, LoRANetwork):
 
             return all_params
 
-    # --- NEW update_and_allocate METHOD FOR ADALORA (start) ---
     def update_and_allocate(self, global_step: int):
         if self.is_adalora:
             if self.adalora_unet_model and hasattr(self.adalora_unet_model.base_model, 'update_and_allocate'):
