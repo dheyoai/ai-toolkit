@@ -1,28 +1,20 @@
 ---
 job: extension
 config:
-  # This name will be the folder for your training outputs and the base filename for saved models.
-  name: "lora_alia_bhatt_baseline" # <--- MODIFIED: Changed name to reflect LoRA baseline
+  name: "lora_alia_bhatt_baseline"
   process:
     - type: 'sd_trainer'
-      # Absolute path to save your training sessions, samples, and weights.
-      # !! IMPORTANT: Update this to your ACTUAL output directory path !!
       training_folder: "/root/varunika/img/ai-toolkit/output"
-      # Directory for TensorBoard logs, within your training output folder.
-      log_dir: "/root/varunika/img/ai-toolkit/output/lora_alia_bhatt_baseline/tensorboard" # <--- MODIFIED: Updated log_dir name
+      log_dir: "/root/varunika/img/ai-toolkit/output/lora_alia_bhatt_baseline/tensorboard" 
       device: cuda:0 
       performance_log_every: 10
 
       network:
-        type: "lora" # <--- MODIFIED: Changed type from "adalora" to "lora"
-        linear: 32 # LoRA rank for linear layers
-        linear_alpha: 32 # LoRA alpha for linear layers
-        lora_dropout: 0.0 # Dropout rate for LoRA layers (optional, set to 0.0 for baseline)
-        
-        # --- REMOVED: All AdaLoRA specific parameters (adalora_target_r, adalora_init_r, etc.) ---
-        
+        type: "lora"
+        linear: 32 
+        linear_alpha: 32
+        lora_dropout: 0.0         
         network_kwargs:
-          # `only_if_contains` is still relevant for selecting which layers LoRA should modify.
           only_if_contains: 
             - ".*attn.*" 
 
@@ -30,11 +22,11 @@ config:
         dtype: bf16 
         save_every: 250
         max_step_saves_to_keep: 4 
-        save_format: diffusers # Diffusers format is good for LoRA as well
+        save_format: diffusers
         push_to_hub: false 
 
       datasets:
-        - folder_path: "/root/varunika/img/datasets/datasets/alia_bhatt" # !! IMPORTANT: Update this to your ACTUAL dataset directory path !!
+        - folder_path: "/root/varunika/img/datasets/datasets/alia_bhatt" 
           trigger_token: '[AB]'
           initializer_concept: "A 34 year old Indian woman, 5 feet 1 inch tall, fair skin, slim build, slim jawline, dimples on cheeks"
           caption_ext: txt
@@ -52,7 +44,7 @@ config:
         train_text_encoder: false
         gradient_checkpointing: true 
         noise_scheduler: flowmatch
-        optimizer: adamw8bit # Keep adamw8bit for memory efficiency
+        optimizer: adamw8bit 
         lr: 0.0001
         ema_config:
           use_ema: false
@@ -77,5 +69,5 @@ config:
         sample_steps: 25
 
 meta:
-  name: "lora_alia_bhatt_baseline" # <--- MODIFIED: Updated meta name
+  name: "lora_alia_bhatt_baseline" 
   version: '1.0'
