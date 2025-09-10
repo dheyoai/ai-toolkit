@@ -21,7 +21,8 @@ import torch
 import torch.backends.cuda
 from huggingface_hub import HfApi, Repository, interpreter_login
 from huggingface_hub.utils import HfFolder
-
+import torchvision.transforms as transforms
+import uuid
 from toolkit.basic import value_map
 from toolkit.clip_vision_adapter import ClipVisionAdapter
 from toolkit.custom_adapter import CustomAdapter
@@ -31,7 +32,7 @@ from toolkit.ema import ExponentialMovingAverage
 from toolkit.embedding import Embedding
 from toolkit.image_utils import show_tensors, show_latents, reduce_contrast
 from toolkit.ip_adapter import IPAdapter
-from toolkit.lora_special import LoRASpecialNetwork # Ensure this is imported
+from toolkit.lora_special import LoRASpecialNetwork
 from toolkit.lorm import convert_diffusers_unet_to_lorm, count_parameters, print_lorm_extract_details, \
     lorm_ignore_if_contains, lorm_parameter_threshold, LORM_TARGET_REPLACE_MODULE
 from toolkit.lycoris_special import LycorisSpecialNetwork
@@ -110,7 +111,8 @@ class BaseSDTrainProcess(BaseTrainProcess):
             self.network_config = None
         self.train_config = TrainConfig(**self.get_conf('train', {}))
         model_config = self.get_conf('model', {})
-        self.modules_being_trained: List[torch.nn.Module] = [] # This will be populated later based on training type
+        self.modules_being_trained: List[torch.nn.Module] = []
+        self.loss_and_step_list = []
 
         # update modelconfig dtype to match train
         model_config['dtype'] = self.train_config.dtype
@@ -311,7 +313,7 @@ class BaseSDTrainProcess(BaseTrainProcess):
             # note: diffusers will automatically expand the trigger to the number of added tokens
             # ie test123 will become test123 test123_1 test123_2 etc. Do not add this yourself here
             if self.embedding is not None:
-                # import pdb; pdb.set_trace
+                # import pdb; pdb.set_trace()
                 prompt = self.embedding.inject_embedding_to_prompt(
                     prompt, self.enable_ttb, expand_token=True, add_if_not_present=False
                 )
@@ -406,76 +408,177 @@ class BaseSDTrainProcess(BaseTrainProcess):
         })
         return info
 
+
     def clean_up_saves(self):
         if not self.accelerator.is_main_process:
             return
-        # remove old saves
-        # get latest saved step
-        latest_item = None
-        if os.path.exists(self.save_root):
-            # pattern is {job_name}_{zero_filled_step} for both files and directories
-            pattern = f"{self.job.name}_*"
-            items = glob.glob(os.path.join(self.save_root, pattern))
-            # Separate files and directories
-            safetensors_files = [f for f in items if f.endswith('.safetensors')]
-            pt_files = [f for f in items if f.endswith('.pt')]
-            directories = [d for d in items if os.path.isdir(d) and not d.endswith('.safetensors')]
-            embed_files = []
-            # do embedding files
-            if self.embed_config is not None:
-                embed_pattern = "".join([self.embed_config[i].trigger for i in range(len(self.embed_config))])
-                embed_pattern = f"{embed_pattern}_*"
-                # embed_pattern = f"{self.embed_config.trigger}_*"
-                embed_items = glob.glob(os.path.join(self.save_root, embed_pattern))
-                # will end in safetensors or pt
-                embed_files = [f for f in embed_items if f.endswith('.safetensors') or f.endswith('.pt')]
 
-            # check for critic files
-            critic_pattern = f"CRITIC_{self.job.name}_*"
-            critic_items = glob.glob(os.path.join(self.save_root, critic_pattern))
+        # Get the best steps based on lowest loss
+        if not self.loss_and_step_list:
+            return None
 
-            # Sort the lists by creation time if they are not empty
-            if safetensors_files:
-                safetensors_files.sort(key=os.path.getctime)
-            if pt_files:
-                pt_files.sort(key=os.path.getctime)
-            if directories:
-                directories.sort(key=os.path.getctime)
-            if embed_files:
-                embed_files.sort(key=os.path.getctime)
-            if critic_items:
-                critic_items.sort(key=os.path.getctime)
+        # import pdb; pdb.set_trace()
+        sorted_loss_steps = sorted(self.loss_and_step_list, key=lambda x: x[0])[:self.save_config.max_step_saves_to_keep]
+        best_steps = [str(step).zfill(9) for _, step in sorted_loss_steps]  # Zero-pad step numbers for matching
 
-            # Combine and sort the lists
-            combined_items = safetensors_files + directories + pt_files
-            combined_items.sort(key=os.path.getctime)
+        # Get all items in save_root
+        if not os.path.exists(self.save_root):
+            return None
 
-            # Use slicing with a check to avoid 'NoneType' error
-            safetensors_to_remove = safetensors_files[
-                                    :-self.save_config.max_step_saves_to_keep] if safetensors_files else []
-            pt_files_to_remove = pt_files[:-self.save_config.max_step_saves_to_keep] if pt_files else []
-            directories_to_remove = directories[:-self.save_config.max_step_saves_to_keep] if directories else []
-            embeddings_to_remove = embed_files[:-self.save_config.max_step_saves_to_keep] if embed_files else []
-            critic_to_remove = critic_items[:-self.save_config.max_step_saves_to_keep] if critic_items else []
+        # Pattern for job-related files and directories
+        pattern = f"{self.job.name}_*"
+        items = glob.glob(os.path.join(self.save_root, pattern))
+        
+        # Separate files and directories
+        safetensors_files = [f for f in items if f.endswith('.safetensors')]
+        # pt_files = [f for f in items if f.endswith('.pt')]
+        # directories = [d for d in items if os.path.isdir(d) and not d.endswith('.safetensors')]
+        embed_files = []
+        tokenizer_dirs = glob.glob(os.path.join(self.save_root, "tokenizer_*"))
+        text_encoder_dirs = glob.glob(os.path.join(self.save_root, "text_encoder_*"))
 
-            items_to_remove = safetensors_to_remove + pt_files_to_remove + directories_to_remove + embeddings_to_remove + critic_to_remove
+        # critic_items = []
 
-            # remove duplicates
-            items_to_remove = list(dict.fromkeys(items_to_remove))
+        # Handle embedding files
+        if self.embed_config is not None:
+            embed_pattern =  self.embed_config[0].trigger[:-1]
+            embed_pattern = f"{embed_pattern}*"
+            print(embed_pattern)
+            embed_items = glob.glob(os.path.join(self.save_root, embed_pattern))
+            embed_files = [f for f in embed_items if f.endswith('.safetensors') or f.endswith('.pt')]
 
-            for item in items_to_remove:
-                print_acc(f"Removing old save: {item}")
-                if os.path.isdir(item):
-                    shutil.rmtree(item)
-                else:
-                    os.remove(item)
-                # see if a yaml file with same name exists
-                yaml_file = os.path.splitext(item)[0] + ".yaml"
-                if os.path.exists(yaml_file):
-                    os.remove(yaml_file)
-            if combined_items:
-                latest_item = combined_items[-1]
-        return latest_item
+        # Handle critic files
+        # critic_pattern = f"CRITIC_{self.job.name}_*"
+        # critic_items = glob.glob(os.path.join(self.save_root, critic_pattern))
+
+        # Combine all items
+        # combined_items = safetensors_files + pt_files + directories + embed_files + critic_items
+        combined_items = safetensors_files + embed_files + text_encoder_dirs + tokenizer_dirs
+
+        # Filter items to remove (those not matching best steps)
+        items_to_remove, steps_to_remove = [], []
+        # latest_item = None
+
+        # for item in combined_items:
+        #     # Extract step number from item name
+        #     step = None
+        #     for pattern in [f"{self.job.name}_", f"CRITIC_{self.job.name}_", embed_pattern[:-1]]:
+        #         if pattern in item:
+        #             step_part = item.split(pattern)[-1]
+        #             step = step_part.split('.')[0] if '.' in step_part else step_part
+        #             break
+            
+        #     # Keep item if its step is in best_steps
+        #     # if step:
+        #     #     step = step.replace("LoRA_", '')
+        #     if step and step in best_steps:
+        #         if not latest_item or os.path.getctime(item) > os.path.getctime(latest_item):
+        #             latest_item = item
+        #     else:
+        #         items_to_remove.append(item)
+
+        for file in combined_items:
+            found = False
+            for step in best_steps:
+                if step in file:
+                    found = True
+            if not found:
+                items_to_remove.append(file)
+                # steps_to_remove.append(int(step)) ## this is wrong
+
+        # Remove duplicates
+        items_to_remove = list(dict.fromkeys(items_to_remove))
+
+        # Remove old saves and associated YAML files
+        for item in items_to_remove:
+            print_acc(f"Removing old save: {item}")
+            if os.path.isdir(item):
+                shutil.rmtree(item)
+            else:
+                os.remove(item)
+            # Remove associated YAML file
+            yaml_file = os.path.splitext(item)[0] + ".yaml"
+            if os.path.exists(yaml_file):
+                os.remove(yaml_file)
+
+        if len(best_steps) > 0: 
+            best_steps_int = [int(step) for step in best_steps]
+            self.loss_and_step_list = [tup for tup in self.loss_and_step_list if tup[1] in best_steps_int]
+
+
+    # def clean_up_saves(self):
+    #     if not self.accelerator.is_main_process:
+    #         return
+    #     # remove old saves
+    #     # get latest saved step
+    #     latest_item = None
+    #     if os.path.exists(self.save_root):
+    #         # pattern is {job_name}_{zero_filled_step} for both files and directories
+    #         pattern = f"{self.job.name}_*"
+    #         items = glob.glob(os.path.join(self.save_root, pattern))
+    #         # Separate files and directories
+    #         safetensors_files = [f for f in items if f.endswith('.safetensors')]
+    #         pt_files = [f for f in items if f.endswith('.pt')]
+    #         directories = [d for d in items if os.path.isdir(d) and not d.endswith('.safetensors')]
+    #         embed_files = []
+    #         # do embedding files
+    #         if self.embed_config is not None:
+    #             embed_pattern = "".join([self.embed_config[i].trigger for i in range(len(self.embed_config))])
+    #             embed_pattern = f"{embed_pattern}_*"
+    #             # embed_pattern = f"{self.embed_config.trigger}_*"
+    #             embed_items = glob.glob(os.path.join(self.save_root, embed_pattern))
+    #             # will end in safetensors or pt
+    #             embed_files = [f for f in embed_items if f.endswith('.safetensors') or f.endswith('.pt')]
+
+    #         # check for critic files
+    #         critic_pattern = f"CRITIC_{self.job.name}_*"
+    #         critic_items = glob.glob(os.path.join(self.save_root, critic_pattern))
+
+    #         # Sort the lists by creation time if they are not empty
+    #         if safetensors_files:
+    #             safetensors_files.sort(key=os.path.getctime)
+    #         if pt_files:
+    #             pt_files.sort(key=os.path.getctime)
+    #         if directories:
+    #             directories.sort(key=os.path.getctime)
+    #         if embed_files:
+    #             embed_files.sort(key=os.path.getctime)
+    #         if critic_items:
+    #             critic_items.sort(key=os.path.getctime)
+
+    #         # Combine and sort the lists
+    #         combined_items = safetensors_files + directories + pt_files
+    #         combined_items.sort(key=os.path.getctime)
+
+    #         # Use slicing with a check to avoid 'NoneType' error
+    #         safetensors_to_remove = safetensors_files[
+    #                                 :-self.save_config.max_step_saves_to_keep] if safetensors_files else []
+    #         pt_files_to_remove = pt_files[:-self.save_config.max_step_saves_to_keep] if pt_files else []
+    #         directories_to_remove = directories[:-self.save_config.max_step_saves_to_keep] if directories else []
+    #         embeddings_to_remove = embed_files[:-self.save_config.max_step_saves_to_keep] if embed_files else []
+    #         critic_to_remove = critic_items[:-self.save_config.max_step_saves_to_keep] if critic_items else []
+
+    #         items_to_remove = safetensors_to_remove + pt_files_to_remove + directories_to_remove + embeddings_to_remove + critic_to_remove
+
+    #         # remove all but the latest max_step_saves_to_keep
+    #         # items_to_remove = combined_items[:-self.save_config.max_step_saves_to_keep]
+
+    #         # remove duplicates
+    #         items_to_remove = list(dict.fromkeys(items_to_remove))
+
+    #         for item in items_to_remove:
+    #             print_acc(f"Removing old save: {item}")
+    #             if os.path.isdir(item):
+    #                 shutil.rmtree(item)
+    #             else:
+    #                 os.remove(item)
+    #             # see if a yaml file with same name exists
+    #             yaml_file = os.path.splitext(item)[0] + ".yaml"
+    #             if os.path.exists(yaml_file):
+    #                 os.remove(yaml_file)
+    #         if combined_items:
+    #             latest_item = combined_items[-1]
+    #     return latest_item
 
     def post_save_hook(self, save_path):
         # override in subclass
@@ -487,7 +590,7 @@ class BaseSDTrainProcess(BaseTrainProcess):
     def end_step_hook(self):
         pass
 
-    def save(self, step=None):
+    def save(self, step=None, last=False):
         if not self.accelerator.is_main_process:
             return
         flush()
@@ -513,8 +616,8 @@ class BaseSDTrainProcess(BaseTrainProcess):
                 self.sd.tokenizer.save_pretrained(os.path.join(self.save_root, f'tokenizer_{self.job.name}_{step_num}'))
 
             if isinstance(self.sd.text_encoder, List):
-                for idx, text_encoder_module in enumerate(self.sd.text_encoder): # Renamed `text_encoder` to `text_encoder_module`
-                    text_encoder_module.save_pretrained(os.path.join(self.save_root, f'text_encoder_{idx}_{self.job.name}_{step_num}'))
+                for idx, text_encoder in enumerate(self.sd.text_encoder):
+                    text_encoder.save_pretrained(os.path.join(self.save_root, f'text_encoder_{idx}_{self.job.name}_{step_num}'))
             else:
                 self.sd.text_encoder.save_pretrained(os.path.join(self.save_root, f'text_encoder_{self.job.name}_{step_num}'))
 
@@ -537,29 +640,23 @@ class BaseSDTrainProcess(BaseTrainProcess):
             if self.network is not None:
                 lora_name = self.job.name
                 if self.named_lora:
-                    lora_name += '_LoRA' if not self.network.is_adalora else '_AdaLoRA' # <--- MODIFIED for AdaLoRA name
+                    # add _lora to name
+                    lora_name += '_LoRA'
 
                 filename = f'{lora_name}{step_num}.safetensors'
                 file_path = os.path.join(self.save_root, filename)
-                
-                # If AdaLoRA, `self.network.multiplier` handling might differ.
-                # `get_state_dict` of `LoRASpecialNetwork` will handle PEFT model state.
-                prev_multiplier = None
-                if not self.network.is_adalora:
-                    prev_multiplier = self.network.multiplier
-                    self.network.multiplier = 1.0
+                prev_multiplier = self.network.multiplier
+                self.network.multiplier = 1.0
 
+                # if we are doing embedding training as well, add that
                 embedding_dict = self.embedding.state_dict() if self.embedding else None
-                
-                # `self.network.save_weights` now handles AdaLoRA state dict extraction
                 self.network.save_weights(
                     file_path,
                     dtype=get_torch_dtype(self.save_config.dtype),
                     metadata=save_meta,
                     extra_state_dict=embedding_dict
                 )
-                if not self.network.is_adalora and prev_multiplier is not None:
-                    self.network.multiplier = prev_multiplier
+                self.network.multiplier = prev_multiplier
                 # if we have an embedding as well, pair it with the network
 
             # even if added to lora, still save the trigger version
@@ -595,7 +692,7 @@ class BaseSDTrainProcess(BaseTrainProcess):
                     metadata=save_meta,
                 )
 
-            if self.adapter_config is not None and self.adapter_config.train:
+            if self.adapter is not None and self.adapter_config.train:
                 adapter_name = self.job.name
                 if self.network_config is not None or self.embedding is not None:
                     # add _lora to name
@@ -704,7 +801,10 @@ class BaseSDTrainProcess(BaseTrainProcess):
                 print_acc(e)
                 print_acc("Could not save optimizer")
 
-        self.clean_up_saves()
+        if not last:
+            self.clean_up_saves()
+        with open(f"{self.save_root}/epoch_loss_heap_original.json", 'w') as f:
+            json.dump(self.loss_and_step_list, f)
         self.post_save_hook(file_path)
 
         if self.ema is not None:
@@ -736,57 +836,31 @@ class BaseSDTrainProcess(BaseTrainProcess):
         # set some config
         self.accelerator.even_batches=False
         
-        # We need to prepare the *trainable* modules with Accelerator.
-        # For AdaLoRA, self.sd.unet and self.sd.text_encoder *are already* the PEFT-wrapped trainable models.
-        # For other networks, self.sd.network contains the trainable modules.
-        # For fine-tuning, the base UNet/Text Encoder are the trainable modules.
+        # # prepare all the models stuff for accelerator (hopefully we dont miss any)
+        self.sd.vae = self.accelerator.prepare(self.sd.vae)
+        if self.sd.unet is not None:
+            self.sd.unet = self.accelerator.prepare(self.sd.unet)
+            # todo always tdo it?
+            self.modules_being_trained.append(self.sd.unet)
+        if self.sd.text_encoder is not None and self.train_config.train_text_encoder:
+            if isinstance(self.sd.text_encoder, list):
+                self.sd.text_encoder = [self.accelerator.prepare(model) for model in self.sd.text_encoder]
+                self.modules_being_trained.extend(self.sd.text_encoder)
+            else:
+                self.sd.text_encoder = self.accelerator.prepare(self.sd.text_encoder)
+                self.modules_being_trained.append(self.sd.text_encoder)
+        if self.sd.refiner_unet is not None and self.train_config.train_refiner:
+            self.sd.refiner_unet = self.accelerator.prepare(self.sd.refiner_unet)
+            self.modules_being_trained.append(self.sd.refiner_unet)
+        # todo, do we need to do the network or will "unet" get it?
+        if self.sd.network is not None:
+            self.sd.network = self.accelerator.prepare(self.sd.network)
+            self.modules_being_trained.append(self.sd.network)
+        if self.adapter is not None and self.adapter_config.train:
+            # todo adapters may not be a module. need to check
+            self.adapter = self.accelerator.prepare(self.adapter)
+            self.modules_being_trained.append(self.adapter)
         
-        self.sd.vae = self.accelerator.prepare(self.sd.vae) # VAE is usually not trained
-
-        # Populate modules_being_trained based on current setup
-        self.modules_being_trained = [] # Reset to avoid duplicates and ensure correct modules are tracked
-
-        if self.network is not None and hasattr(self.network, 'is_adalora') and self.network.is_adalora:
-            # For AdaLoRA, self.sd.unet and self.sd.text_encoder are already PEFT-wrapped models (trainable parts)
-            if self.sd.unet is not None and self.train_config.train_unet:
-                self.sd.unet = self.accelerator.prepare(self.sd.unet)
-                self.modules_being_trained.append(self.sd.unet)
-            if self.sd.text_encoder is not None and self.train_config.train_text_encoder:
-                if isinstance(self.sd.text_encoder, list):
-                    self.sd.text_encoder = [self.accelerator.prepare(model) for model in self.sd.text_encoder]
-                    self.modules_being_trained.extend(self.sd.text_encoder)
-                else:
-                    self.sd.text_encoder = self.accelerator.prepare(self.sd.text_encoder)
-                    self.modules_being_trained.append(self.sd.text_encoder)
-        else:
-            # Existing logic for other networks or fine-tuning
-            if self.sd.unet is not None and self.train_config.train_unet:
-                self.sd.unet = self.accelerator.prepare(self.sd.unet)
-                self.modules_being_trained.append(self.sd.unet)
-            if self.sd.text_encoder is not None and self.train_config.train_text_encoder:
-                if isinstance(self.sd.text_encoder, list):
-                    self.sd.text_encoder = [self.accelerator.prepare(model) for model in self.sd.text_encoder]
-                    self.modules_being_trained.extend(self.sd.text_encoder)
-                else:
-                    self.sd.text_encoder = self.accelerator.prepare(self.sd.text_encoder)
-                    self.modules_being_trained.append(self.sd.text_encoder)
-            if self.sd.refiner_unet is not None and self.train_config.train_refiner:
-                self.sd.refiner_unet = self.accelerator.prepare(self.sd.refiner_unet)
-                self.modules_being_trained.append(self.sd.refiner_unet)
-            # Add self.sd.network if it exists and is not AdaLoRA
-            if self.sd.network is not None and not (hasattr(self.sd.network, 'is_adalora') and self.sd.network.is_adalora):
-                self.sd.network = self.accelerator.prepare(self.sd.network)
-                self.modules_being_trained.append(self.sd.network)
-            if self.adapter is not None and self.adapter_config.train:
-                self.adapter = self.accelerator.prepare(self.adapter)
-                self.modules_being_trained.append(self.adapter)
-            if self.embedding is not None and isinstance(self.embedding, torch.nn.Module):
-                self.embedding = self.accelerator.prepare(self.embedding)
-                self.modules_being_trained.append(self.embedding)
-            if self.decorator is not None:
-                self.decorator = self.accelerator.prepare(self.decorator)
-                self.modules_being_trained.append(self.decorator)
-
         # prepare other things
         self.optimizer = self.accelerator.prepare(self.optimizer)
         if self.lr_scheduler is not None:
@@ -855,8 +929,8 @@ class BaseSDTrainProcess(BaseTrainProcess):
             if paths:
                 paths = [p for p in paths if os.path.exists(p)]
                 # remove false positives
-                if '_LoRA' not in name and '_AdaLoRA' not in name: # <-- MODIFIED: Check for _AdaLoRA
-                    paths = [p for p in paths if '_LoRA' not in p and '_AdaLoRA' not in p] # <-- MODIFIED
+                if '_LoRA' not in name:
+                    paths = [p for p in paths if '_LoRA' not in p]
                 if '_refiner' not in name:
                     paths = [p for p in paths if '_refiner' not in p]
                 if '_t2i' not in name:
@@ -1536,6 +1610,61 @@ class BaseSDTrainProcess(BaseTrainProcess):
         # set trainable params
         self.sd.adapter = self.adapter
 
+
+    def save_preprocessed_images (self, batch_list):
+        for processed_tensor in batch_list[0].tensor:
+            temp_tensor = processed_tensor.cpu()
+            temp_tensor = (temp_tensor - temp_tensor.min()) / (temp_tensor.max() - temp_tensor.min())
+            to_pil = transforms.ToPILImage()
+            processed_image = to_pil(temp_tensor)
+            os.makedirs(f"{self.save_root}/preprocessed_images", exist_ok=True)
+            processed_file_name = f"{self.save_root}/preprocessed_images/{uuid.uuid4().hex}.png"
+            processed_image.save(processed_file_name)
+            print(f"Saved {processed_file_name}")
+
+
+
+    def end_training_loop (self, unet, noise_scheduler, optimizer, tokenizer, text_encoder):
+        ###################################################################
+        ##  END TRAIN LOOP
+        ###################################################################
+        self.accelerator.wait_for_everyone()
+        if self.progress_bar is not None:
+            self.progress_bar.close()
+        if self.train_config.free_u:
+            self.sd.pipeline.disable_freeu()
+        if not self.train_config.disable_sampling:
+            self.sample(self.step_num)
+            self.logger.commit(step=self.step_num)
+        print_acc("")
+        if self.accelerator.is_main_process:
+            self.save(last=True)
+            self.logger.finish()
+        self.accelerator.end_training()
+
+        if self.accelerator.is_main_process:
+            # push to hub
+            if self.save_config.push_to_hub:
+                if("HF_TOKEN" not in os.environ):
+                    interpreter_login(new_session=False, write_permission=True)
+                self.push_to_hub(
+                    repo_id=self.save_config.hf_repo_id,
+                    private=self.save_config.hf_private
+                )
+        del (
+            self.sd,
+            unet,
+            noise_scheduler,
+            optimizer,
+            self.network,
+            tokenizer,
+            text_encoder,
+        )
+
+        flush()
+        self.done_hook()
+
+
     def run(self):
         # torch.autograd.set_detect_anomaly(True)
         # run base process run
@@ -1603,7 +1732,6 @@ class BaseSDTrainProcess(BaseTrainProcess):
         dtype = get_torch_dtype(self.train_config.dtype)
 
         # model is loaded from BaseSDProcess
-        # IMPORTANT: These `unet` and `text_encoder` variables will be updated in-place by `self.network.apply_to` for AdaLoRA.
         unet = self.sd.unet
         vae = self.sd.vae
         tokenizer = self.sd.tokenizer
@@ -1672,7 +1800,6 @@ class BaseSDTrainProcess(BaseTrainProcess):
             if self.train_config.gradient_checkpointing:
                 self.sd.refiner_unet.enable_gradient_checkpointing()
 
-        # These modules will be wrapped by PEFT if AdaLoRA is enabled
         if isinstance(text_encoder, list):
             for te in text_encoder:
                 te.requires_grad_(False)
@@ -1706,51 +1833,29 @@ class BaseSDTrainProcess(BaseTrainProcess):
 
         self.hook_after_model_load()
         flush()
-        
-        # --- MODIFICATION START ---
-        # Calculate total_training_steps for AdaLoRAConfig
-        total_training_steps = self.train_config.steps
-        
         if not self.is_fine_tuning:
             if self.network_config is not None:
-                network_kwargs = self.network_config.network_kwargs if self.network_config.network_kwargs else {} # Ensure dict
+                # TODO should we completely switch to LycorisSpecialNetwork?
+                network_kwargs = self.network_config.network_kwargs
                 is_lycoris = False
+                is_lorm = self.network_config.type.lower() == 'lorm'
                 # default to LoCON if there are any conv layers or if it is named
                 NetworkClass = LoRASpecialNetwork
                 if self.network_config.type.lower() == 'locon' or self.network_config.type.lower() == 'lycoris':
                     NetworkClass = LycorisSpecialNetwork
                     is_lycoris = True
 
-                is_lorm = self.network_config.type.lower() == 'lorm'
                 if is_lorm:
                     network_kwargs['ignore_if_contains'] = lorm_ignore_if_contains
                     network_kwargs['parameter_threshold'] = lorm_parameter_threshold
                     network_kwargs['target_lin_modules'] = LORM_TARGET_REPLACE_MODULE
+
+                # if is_lycoris:
+                #     preset = PRESET['full']
+                # NetworkClass.apply_preset(preset)
                 
                 if hasattr(self.sd, 'target_lora_modules'):
                     network_kwargs['target_lin_modules'] = self.sd.target_lora_modules
-
-                # Create a mutable copy of network_kwargs to clean it
-                cleaned_network_kwargs = copy.deepcopy(network_kwargs) # <--- THIS LINE IS NOW CORRECTLY INDENTED
-                
-                # List of arguments that are explicitly passed and should NOT be in network_kwargs
-                conflicting_args = [
-                    'ignore_if_contains', 'only_if_contains', 'parameter_threshold', 'attn_only',
-                    'target_lin_modules', 'target_conv_modules', 'full_train_in_out',
-                    'transformer_only', 'peft_format', 'is_assistant_adapter',
-                    'adalora_target_r', 'adalora_init_r', 'adalora_tinit', 'adalora_tfinal',
-                    'adalora_deltaT', 'adalora_beta1', 'adalora_beta2', 'adalora_orth_reg_weight',
-                    'lora_dropout' 
-                ]
-
-                # Remove conflicting arguments from cleaned_network_kwargs
-                for arg_name in conflicting_args:
-                    if arg_name in cleaned_network_kwargs:
-                        del cleaned_network_kwargs[arg_name]
-
-                # Ensure is_lorm is passed correctly, it's a direct parameter based on type
-                # (This line was duplicated, ensuring it's evaluated once for the NetworkClass call)
-                # is_lorm = self.network_config.type.lower() == 'lorm' # Remove this duplicate, it's defined above
 
                 self.network = NetworkClass(
                     text_encoder=text_encoder,
@@ -1776,56 +1881,36 @@ class BaseSDTrainProcess(BaseTrainProcess):
                     use_text_encoder_2=self.model_config.use_text_encoder_2,
                     use_bias=is_lorm,
                     is_lorm=is_lorm,
-                    ignore_if_contains=self.network_config.ignore_if_contains,
-                    only_if_contains=self.network_config.only_if_contains,
-                    parameter_threshold=self.network_config.parameter_threshold,
-                    attn_only=self.network_config.attn_only,
-                    target_lin_modules=self.network_config.target_lin_modules,
-                    target_conv_modules=self.network_config.target_conv_modules,
+                    network_config=self.network_config,
                     network_type=self.network_config.type,
-                    full_train_in_out=self.network_config.full_train_in_out,
                     transformer_only=self.network_config.transformer_only,
-                    peft_format=self.network_config.peft_format,
-                    is_assistant_adapter=self.network_config.is_assistant_adapter,
-                    adalora_target_r=self.network_config.adalora_target_r,
-                    adalora_init_r=self.network_config.adalora_init_r,
-                    adalora_tinit=self.network_config.adalora_tinit,
-                    adalora_tfinal=self.network_config.adalora_tfinal,
-                    adalora_deltaT=self.network_config.adalora_deltaT,
-                    adalora_beta1=self.network_config.adalora_beta1,
-                    adalora_beta2=self.network_config.adalora_beta2,
-                    adalora_orth_reg_weight=self.network_config.adalora_orth_reg_weight,
-                    lora_dropout=self.network_config.lora_dropout,
                     is_transformer=self.sd.is_transformer,
                     base_model=self.sd,
-                    total_training_steps=total_training_steps,
-                    **cleaned_network_kwargs
+                    **network_kwargs
                 )
 
-                # This line (originally 1812) is now correctly indented and nested
-                self.network.apply_to(self.sd.text_encoder, self.sd.unet, self.train_config.train_text_encoder, self.train_config.train_unet)
-                # Update our local `unet` and `text_encoder` variables to point to these wrapped models.
-                unet = self.sd.unet
-                text_encoder = self.sd.text_encoder
 
-                # Give the network to sd so it can use it
+                # todo switch everything to proper mixed precision like this
+                self.network.force_to(self.device_torch, dtype=torch.float32)
+                # give network to sd so it can use it
                 self.sd.network = self.network
-                
-                # For non-AdaLoRA, this might still be needed. For AdaLoRA, it's handled internally by PEFT.
-                if not (hasattr(self.network, 'is_adalora') and self.network.is_adalora):
-                    self.network._update_torch_multiplier()
+                self.network._update_torch_multiplier()
 
-                # For AdaLoRA, `prepare_grad_etc` is not needed as `get_peft_model` handles it.
-                if not (hasattr(self.network, 'is_adalora') and self.network.is_adalora):
-                    # Original `prepare_grad_etc` needs the *PEFT-wrapped* unet and text_encoder.
-                    # Assuming it handles PEFT models transparently, or it's only for non-PEFT paths.
-                    # If it modifies `requires_grad`, that's handled by PEFT for AdaLoRA.
-                    pass # The original `self.network.prepare_grad_etc(text_encoder, unet)` is skipped here for AdaLoRA
-                flush()
+                self.network.apply_to(
+                    text_encoder,
+                    unet,
+                    self.train_config.train_text_encoder,
+                    self.train_config.train_unet
+                )
 
-                # LORM setup
+                # we cannot merge in if quantized
+                if self.model_config.quantize:
+                    # todo find a way around this
+                    self.network.can_merge_in = False
+
                 if is_lorm:
                     self.network.is_lorm = True
+                    # make sure it is on the right device
                     self.sd.unet.to(self.sd.device, dtype=dtype)
                     original_unet_param_count = count_parameters(self.sd.unet)
                     self.network.setup_lorm()
@@ -1837,44 +1922,120 @@ class BaseSDTrainProcess(BaseTrainProcess):
                         num_replaced=len(self.network.get_all_modules()),
                     )
 
+                self.network.prepare_grad_etc(text_encoder, unet)
+                flush()
+
                 # LyCORIS doesnt have default_lr
                 config = {
                     'text_encoder_lr': self.train_config.lr,
                     'unet_lr': self.train_config.lr,
-                    'default_lr': self.train_config.lr,
-                    
                 }
-                # `self.network.prepare_optimizer_params` will now return params for PEFT model if AdaLoRA
+                sig = inspect.signature(self.network.prepare_optimizer_params)
+                if 'default_lr' in sig.parameters:
+                    config['default_lr'] = self.train_config.lr
+                if 'learning_rate' in sig.parameters:
+                    config['learning_rate'] = self.train_config.lr
                 params_net = self.network.prepare_optimizer_params(
                     **config
                 )
+
                 params += params_net
 
-                # `gradient_checkpointing` for AdaLoRA is handled by `self.network.enable_gradient_checkpointing()`
                 if self.train_config.gradient_checkpointing:
-                    if hasattr(self.network, 'enable_gradient_checkpointing'):
-                        self.network.enable_gradient_checkpointing()
-                    else: # Fallback for older network types if method doesn't exist
-                        print_acc("Warning: Network does not have enable_gradient_checkpointing method.")
+                    self.network.enable_gradient_checkpointing()
 
                 lora_name = self.name
+                # need to adapt name so they are not mixed up
                 if self.named_lora:
-                    lora_name = f"{lora_name}_LoRA" if not (hasattr(self.network, 'is_adalora') and self.network.is_adalora) else f"{lora_name}_AdaLoRA" # Adjust name for AdaLoRA
+                    lora_name = f"{lora_name}_LoRA"
 
                 latest_save_path = self.get_latest_save_path(lora_name)
                 extra_weights = None
                 if latest_save_path is not None:
                     print_acc(f"#### IMPORTANT RESUMING FROM {latest_save_path} ####")
                     print_acc(f"Loading from {latest_save_path}")
-                    extra_weights = self.network.load_weights(latest_save_path) # Use network's load_weights
-                    if not (hasattr(self.network, 'is_adalora') and self.network.is_adalora): # Multiplier handling for non-AdaLoRA
-                        self.network.multiplier = 1.0
+                    extra_weights = self.load_weights(latest_save_path)
+                    self.network.multiplier = 1.0
+
+            if self.embed_config is not None:
+                # we are doing embedding training as well
+                # import pdb; pdb.set_trace()
+                self.embedding = Embedding(
+                    sd=self.sd,
+                    embed_config=self.embed_config
+                )
+                embed_pattern = "".join([self.embed_config[i].trigger for i in range(len(self.embed_config))])
+
+                latest_save_path = self.get_latest_save_path(embed_pattern)
+                # load last saved weights
+                if latest_save_path is not None:
+                    self.embedding.load_embedding_from_file(latest_save_path, self.device_torch)
+                    if self.embedding.step > 1:
+                        self.step_num = self.embedding.step
+                        self.start_step = self.step_num
+
+                # self.step_num = self.embedding.step
+                # self.start_step = self.step_num
+                params.append({
+                    'params': list(self.embedding.get_trainable_params()),
+                    'lr': self.train_config.embedding_lr
+                })
+
+                flush()
             
-            # ... (rest of embedding, decorator, adapter setup) ...
-        else: # no network, embedding or adapter
+            if self.decorator_config is not None:
+                self.decorator = Decorator(
+                    num_tokens=self.decorator_config.num_tokens,
+                    token_size=4096 # t5xxl hidden size for flux
+                )
+                latest_save_path = self.get_latest_save_path()
+                # load last saved weights
+                if latest_save_path is not None:
+                    state_dict = load_file(latest_save_path)
+                    self.decorator.load_state_dict(state_dict)
+                    self.load_training_state_from_metadata(latest_save_path)
+                    
+                params.append({
+                    'params': list(self.decorator.parameters()),
+                    'lr': self.train_config.lr
+                })
+                
+                # give it to the sd network
+                self.sd.decorator = self.decorator
+                self.decorator.to(self.device_torch, dtype=torch.float32)
+                self.decorator.train()
+
+                flush()
+
+            if self.adapter_config is not None:
+                self.setup_adapter()
+                if self.adapter_config.train:
+
+                    if isinstance(self.adapter, IPAdapter):
+                        # we have custom LR groups for IPAdapter
+                        adapter_param_groups = self.adapter.get_parameter_groups(self.train_config.adapter_lr)
+                        for group in adapter_param_groups:
+                            params.append(group)
+                    else:
+                        # set trainable params
+                        params.append({
+                            'params': list(self.adapter.parameters()),
+                            'lr': self.train_config.adapter_lr
+                        })
+
+                if self.train_config.gradient_checkpointing:
+                    self.adapter.enable_gradient_checkpointing()
+                flush()
+
+            params = self.load_additional_training_modules(params)
+
+        else:  # no network, embedding or adapter
             # set the device state preset before getting params
             self.sd.set_device_state(self.get_params_device_state_preset)
+
+            # params = self.get_params()
             if len(params) == 0:
+                # will only return savable weights and ones with grad
                 params = self.sd.prepare_optimizer_params(
                     unet=self.train_config.train_unet,
                     text_encoder=self.train_config.train_text_encoder,
@@ -1890,15 +2051,22 @@ class BaseSDTrainProcess(BaseTrainProcess):
         flush()
         ### HOOK ###
         params = self.hook_add_extra_train_params(params)
-        self.params = params # Update self.params with the collected parameters.
-        
+        self.params = params
+        # self.params = []
+
+        # for param in params:
+        #     if isinstance(param, dict):
+        #         self.params += param['params']
+        #     else:
+        #         self.params.append(param)
+
         if self.train_config.start_step is not None:
             self.step_num = self.train_config.start_step
             self.start_step = self.step_num
 
         optimizer_type = self.train_config.optimizer.lower()
         
-        # ensure params require grad
+        # esure params require grad
         self.ensure_params_requires_grad(force=True)
         optimizer = get_optimizer(self.params, optimizer_type, learning_rate=self.train_config.lr,
                                   optimizer_params=self.train_config.optimizer_params)
@@ -1965,7 +2133,7 @@ class BaseSDTrainProcess(BaseTrainProcess):
         flush()
         self.last_save_step = self.step_num
         ### HOOK ###
-        self.hook_before_train_loop() # This is where prepare_accelerator is called.
+        self.hook_before_train_loop()
 
         if self.has_first_sample_requested and self.step_num <= 1 and not self.train_config.disable_sampling:
             print_acc("Generating first sample from first sample config")
@@ -2024,10 +2192,15 @@ class BaseSDTrainProcess(BaseTrainProcess):
         # TRAIN LOOP
         ###################################################################
 
-
+        # import pdb; pdb.set_trace()
         start_step_num = self.step_num
         did_first_flush = False
         flush_next = False
+        # new_epoch = False
+        end_epoch = False
+        epoch_loss_dict = {"epoch_loss": 0.0}
+        last_saved = 0 ## if there is no change overall loss in last_saved number of epochs, we end the training loop!!! 😔
+        print(f"\n\nInitialised epoch loss dict with epoch loss = 0.0\n\n")
         for step in range(start_step_num, self.train_config.steps):
             if self.train_config.do_paramiter_swapping:
                 self.optimizer.optimizer.swap_paramiters()
@@ -2050,6 +2223,7 @@ class BaseSDTrainProcess(BaseTrainProcess):
                 # todo improve this logic to send one of each through if we can buckets and batch size might be an issue
                 is_reg_step = False
                 is_save_step = self.save_config.save_every and self.step_num % self.save_config.save_every == 0
+                start_saving_after = (self.step_num >= self.save_config.start_saving_after)
                 is_sample_step = self.sample_config.sample_every and self.step_num % self.sample_config.sample_every == 0
                 if self.train_config.disable_sampling:
                     is_sample_step = False
@@ -2081,6 +2255,10 @@ class BaseSDTrainProcess(BaseTrainProcess):
                         try:
                             with self.timer('get_batch'):
                                 batch = next(dataloader_iterator)
+                                num_steps_in_epoch = sum([len(dataloader.dataset.datasets[j].batch_indices) for j in range(len(dataloader.dataset.datasets))])
+                                if (self.step_num + 1) % num_steps_in_epoch == 0:
+                                    end_epoch = True
+                                    print(f"This is the last iteration of epoch-{self.epoch_num}")
                         except StopIteration:
                             with self.timer('reset_batch'):
                                 # hit the end of an epoch, reset
@@ -2089,6 +2267,13 @@ class BaseSDTrainProcess(BaseTrainProcess):
                                 dataloader_iterator = iter(dataloader)
                                 trigger_dataloader_setup_epoch(dataloader)
                                 self.epoch_num += 1
+                                print(f"\n\nEpoch-{self.epoch_num} will now begin\n\n")
+
+                                # new_epoch = True ##
+                                # print(f"\n\nNew epoch begins now\n\n")
+                                # epoch_loss_dict["epoch_loss"] = 0.0
+                                # print(f"\n\nEpoch loss dict is reset to epoch loss = 0.0\n\n")
+
                                 if self.train_config.gradient_accumulation_steps == -1:
                                     # if we are accumulating for an entire epoch, trigger a step
                                     self.is_grad_accumulation_step = False
@@ -2101,6 +2286,10 @@ class BaseSDTrainProcess(BaseTrainProcess):
                         batch = None
                     batch_list.append(batch)
                     batch_step += 1
+
+                if self.epoch_num == 0:
+                    self.save_preprocessed_images(batch_list)
+
 
                 # setup accumulation
                 if self.train_config.gradient_accumulation_steps == -1:
@@ -2123,12 +2312,18 @@ class BaseSDTrainProcess(BaseTrainProcess):
             with self.accelerator.accumulate(self.modules_being_trained):
                 try:
                     loss_dict = self.hook_train_loop(batch_list)
+                    epoch_loss_dict["epoch_loss"] += loss_dict["loss"]
+                    print(f"\n\nEpoch loss dict is updated with mini batch/bucket loss: {epoch_loss_dict['epoch_loss']}\n\n")
+                    # if loss_dict.get("epoch_loss"):
+                    #     loss_dict["epoch_loss"] += loss_dict["loss"]
+                    # else:
+                    #     loss_dict["epoch_loss"] = 0.0
                 except Exception as e:
                     traceback.print_exc()
                     #print batch info
                     print("Batch Items:")
-                    for batch_item in batch_list:
-                        for item in batch_item.file_items:
+                    for batch in batch_list:
+                        for item in batch.file_items:
                             print(f" - {item.path}")
                     raise e
             if self.torch_profiler is not None:
@@ -2170,14 +2365,14 @@ class BaseSDTrainProcess(BaseTrainProcess):
                     self.progress_bar.set_postfix_str(prog_bar_string)
 
                 # if the batch is a DataLoaderBatchDTO, then we need to clean it up
-                if isinstance(batch_list[0], DataLoaderBatchDTO): # Check first batch in list
+                if isinstance(batch, DataLoaderBatchDTO):
                     with self.timer('batch_cleanup'):
-                        for batch_item in batch_list:
-                            batch_item.cleanup()
+                        batch.cleanup()
 
                 # don't do on first step
                 if self.step_num != self.start_step:
-                    if is_sample_step or is_save_step:
+                    # if is_sample_step or is_save_step:
+                    if is_sample_step or start_saving_after:
                         self.accelerator.wait_for_everyone()
                     if is_sample_step:
                         if self.progress_bar is not None:
@@ -2196,13 +2391,42 @@ class BaseSDTrainProcess(BaseTrainProcess):
                         if self.progress_bar is not None:
                             self.progress_bar.unpause()
 
-                    if is_save_step:
-                        self.accelerator.wait_for_everyone() # Ensure all processes are ready before saving
+                    # if is_save_step:
+                    # if start_saving_after and new_epoch:
+                    if end_epoch:
+                        self.accelerator
                         # print above the progress bar
                         if self.progress_bar is not None:
                             self.progress_bar.pause()
-                        print_acc(f"\nSaving at step {self.step_num}")
-                        self.save(self.step_num)
+
+                        if start_saving_after:
+                            greatest_loss_and_step = sorted(self.loss_and_step_list, key=lambda x: x[0])[-1] if len(self.loss_and_step_list) > 0 else None
+                            if len(self.loss_and_step_list) > 0 and epoch_loss_dict["epoch_loss"] <= greatest_loss_and_step[0]:
+                                print(f"\n\nCurrent step-{self.step_num} (epoch-{self.epoch_num}) loss is less than or equal to the loss at step-{greatest_loss_and_step[1]} ({epoch_loss_dict['epoch_loss']} <= {greatest_loss_and_step[0]})\n\n")
+                                self.loss_and_step_list.append((epoch_loss_dict["epoch_loss"], self.step_num))
+                                print_acc(f"\nSaving at step {self.step_num}")
+                                self.save(self.step_num)
+                                last_saved = 0
+
+                            elif len(self.loss_and_step_list) == 0:
+                                self.loss_and_step_list.append((epoch_loss_dict["epoch_loss"], self.step_num))
+                                print_acc(f"\nSaving at step {self.step_num}")
+                                self.save(self.step_num)
+                            else:
+                                last_saved += 1
+
+                        
+                        # if last_saved == self.train_config.early_stopping_num_epochs:
+                        #     print(f"\n\n\n\n")
+                        #     self.end_training_loop(unet, noise_scheduler, optimizer, tokenizer, text_encoder)
+
+                        
+                        # print(f"\n\nNew epoch begins now\n\n")
+                        epoch_loss_dict["epoch_loss"] = 0.0
+                        print(f"\n\nEpoch loss dict is reset to epoch loss = 0.0\n\n")
+                        # new_epoch = False
+                        end_epoch = False
+                        # epoch_loss_dict["epoch_loss"] = 0.0
                         self.ensure_params_requires_grad()
                         # clear any grads
                         optimizer.zero_grad()
@@ -2271,45 +2495,53 @@ class BaseSDTrainProcess(BaseTrainProcess):
                 self.grad_accumulation_step += 1
                 self.end_step_hook()
 
+            if last_saved == self.train_config.early_stopping_num_epochs:
+                print(f"\n\nTriggering early stopping as there was no downward trend in the aggregate loss in last {last_saved} epoch(s)\n\n")
+                self.end_training_loop(unet, noise_scheduler, optimizer, tokenizer, text_encoder)
+                break
+
 
         ###################################################################
         ##  END TRAIN LOOP
         ###################################################################
-        self.accelerator.wait_for_everyone()
-        if self.progress_bar is not None:
-            self.progress_bar.close()
-        if self.train_config.free_u:
-            self.sd.pipeline.disable_freeu()
-        if not self.train_config.disable_sampling:
-            self.sample(self.step_num)
-            self.logger.commit(step=self.step_num)
-        print_acc("")
-        if self.accelerator.is_main_process:
-            self.save()
-            self.logger.finish()
-        self.accelerator.end_training()
+        if last_saved != self.train_config.early_stopping_num_epochs:
+            self.end_training_loop(unet, noise_scheduler, optimizer, tokenizer, text_encoder)
 
-        if self.accelerator.is_main_process:
-            # push to hub
-            if self.save_config.push_to_hub:
-                if("HF_TOKEN" not in os.environ):
-                    interpreter_login(new_session=False, write_permission=True)
-                self.push_to_hub(
-                    repo_id=self.save_config.hf_repo_id,
-                    private=self.save_config.hf_private
-                )
-        del (
-            self.sd,
-            unet,
-            noise_scheduler,
-            optimizer,
-            self.network,
-            tokenizer,
-            text_encoder,
-        )
+        # self.accelerator.wait_for_everyone()
+        # if self.progress_bar is not None:
+        #     self.progress_bar.close()
+        # if self.train_config.free_u:
+        #     self.sd.pipeline.disable_freeu()
+        # if not self.train_config.disable_sampling:
+        #     self.sample(self.step_num)
+        #     self.logger.commit(step=self.step_num)
+        # print_acc("")
+        # if self.accelerator.is_main_process:
+        #     self.save()
+        #     self.logger.finish()
+        # self.accelerator.end_training()
 
-        flush()
-        self.done_hook()
+        # if self.accelerator.is_main_process:
+        #     # push to hub
+        #     if self.save_config.push_to_hub:
+        #         if("HF_TOKEN" not in os.environ):
+        #             interpreter_login(new_session=False, write_permission=True)
+        #         self.push_to_hub(
+        #             repo_id=self.save_config.hf_repo_id,
+        #             private=self.save_config.hf_private
+        #         )
+        # del (
+        #     self.sd,
+        #     unet,
+        #     noise_scheduler,
+        #     optimizer,
+        #     self.network,
+        #     tokenizer,
+        #     text_encoder,
+        # )
+
+        # flush()
+        # self.done_hook()
 
     def push_to_hub(
     self,
@@ -2334,7 +2566,7 @@ class BaseSDTrainProcess(BaseTrainProcess):
         api.upload_folder(
             repo_id=repo_id,
             folder_path=self.save_root,
-            ignore_patterns=["*.yaml", "*.pt"], # Also ignore non-safetensors AdaLoRA specific files if any
+            ignore_patterns=["*.yaml", "*.pt"],
             repo_type="model",
         )
 
@@ -2365,14 +2597,9 @@ class BaseSDTrainProcess(BaseTrainProcess):
         if self.model_config.is_v3:
             tags.append("sd3")
         if self.network_config:
-            # --- NEW: Adjust tags for AdaLoRA (start) ---
-            if self.network is not None and hasattr(self.network, 'is_adalora') and self.network.is_adalora:
-                tags.extend(["adalora", "peft"])
-            else:
-                tags.append("lora")
-            # --- NEW: Adjust tags for AdaLoRA (end) ---
             tags.extend(
                 [
+                    "lora",
                     "diffusers",
                     "template:sd-lora",
                     "ai-toolkit",
@@ -2411,66 +2638,6 @@ class BaseSDTrainProcess(BaseTrainProcess):
                         }
                     )
         dtype = "torch.bfloat16" if self.model_config.is_flux else "torch.float16"
-        
-        # --- NEW: Adjust use_case_code for AdaLoRA (start) ---
-        use_case_code = ""
-        if self.network is not None and hasattr(self.network, 'is_adalora') and self.network.is_adalora:
-            # For AdaLoRA, we need specific PEFT loading instructions
-            text_encoder_loading_snippet = ""
-            if self.train_config.train_text_encoder:
-                if isinstance(self.sd.text_encoder, list):
-                    text_encoder_loading_snippet = "\n".join([
-                        f"peft_text_encoder_{i+1} = PeftModel.from_pretrained(pipeline.text_encoder[{i}], '{{repo_id}}', adapter_name='adalora_te_{i}')"
-                    for i in range(len(self.sd.text_encoder))])
-                else:
-                    text_encoder_loading_snippet = """
-# If Text Encoder was also trained
-peft_text_encoder = PeftModel.from_pretrained(pipeline.text_encoder, '{repo_id}', adapter_name='adalora_te')
-"""
-            use_case_code = f"""
-## Use it with the [🧨 diffusers library](https://github.com/huggingface/diffusers)
-
-```python
-from diffusers import AutoPipelineForText2Image
-from peft import PeftModel
-import torch
-
-# Load your base model
-pipeline = AutoPipelineForText2Image.from_pretrained('{base_model}', torch_dtype={dtype}).to('cuda')
-
-# Load AdaLoRA weights for UNet (transformer)
-adalora_unet_model = PeftModel.from_pretrained(pipeline.unet, '{repo_id}', adapter_name='adalora_unet')
-{text_encoder_loading_snippet}
-
-# You can now use the pipeline for inference.
-# The `pipeline.unet` and `pipeline.text_encoder` are already modified in-place by PeftModel.from_pretrained
-# If the pipeline doesn't directly pick up the modified UNet/TextEncoder,
-# you might need to reassign or ensure the PEFT models are the ones being used during inference.
-image = pipeline('{instance_prompt if not widgets else self.sample_config.prompts}').images
-image.save("my_image.png")
-```
-
-For more details on loading AdaLoRA models, check the [PEFT documentation](https://huggingface.co/docs/peft/en/package_reference/adalora)
-"""
-        else:
-            # Original diffusers loading snippet for non-AdaLoRA
-            use_case_code = f"""
-## Use it with the [🧨 diffusers library](https://huggingface.co/docs/diffusers/main/en/using-diffusers/loading_adapters)
-
-```python
-from diffusers import AutoPipelineForText2Image
-import torch
-
-pipeline = AutoPipelineForText2Image.from_pretrained('{base_model}', torch_dtype={dtype}).to('cuda')
-pipeline.load_lora_weights('{repo_id}', weight_name='{self.job.name}.safetensors')
-image = pipeline('{instance_prompt if not widgets else self.sample_config.prompts}').images
-image.save("my_image.png")
-```
-
-For more details, including weighting, merging and fusing LoRAs, check the [documentation on loading LoRAs in diffusers](https://huggingface.co/docs/diffusers/main/en/using-diffusers/loading_adapters)
-"""
-        # --- NEW: Adjust use_case_code for AdaLoRA (end) ---
-
         # Construct the README content
         readme_content = f"""---
 tags:
@@ -2498,6 +2665,19 @@ Weights for this model are available in Safetensors format.
 
 [Download](/{repo_id}/tree/main) them in the Files & versions tab.
 
-{use_case_code}
+## Use it with the [🧨 diffusers library](https://github.com/huggingface/diffusers)
+
+```py
+from diffusers import AutoPipelineForText2Image
+import torch
+
+pipeline = AutoPipelineForText2Image.from_pretrained('{base_model}', torch_dtype={dtype}).to('cuda')
+pipeline.load_lora_weights('{repo_id}', weight_name='{self.job.name}.safetensors')
+image = pipeline('{instance_prompt if not widgets else self.sample_config.prompts[0]}').images[0]
+image.save("my_image.png")
+```
+
+For more details, including weighting, merging and fusing LoRAs, check the [documentation on loading LoRAs in diffusers](https://huggingface.co/docs/diffusers/main/en/using-diffusers/loading_adapters)
+
 """
         return readme_content
