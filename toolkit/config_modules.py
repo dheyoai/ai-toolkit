@@ -1,7 +1,6 @@
-import json # Ensure json is imported at the top of the file if not already there
 import os
 import time
-from typing import List, Optional, Literal, Tuple, Union, TYPE_CHECKING, Dict, Any # Ensure 'Any' is imported
+from typing import List, Optional, Literal, Tuple, Union, TYPE_CHECKING, Dict
 import random
 
 import torch
@@ -21,6 +20,7 @@ else:
 class SaveConfig:
     def __init__(self, **kwargs):
         self.save_every: int = kwargs.get('save_every', 1000)
+        self.start_saving_after: int = kwargs.get('start_saving_after', 800)
         self.dtype: str = kwargs.get('dtype', 'float16')
         self.max_step_saves_to_keep: int = kwargs.get('max_step_saves_to_keep', 5)
         self.save_format: SaveFormat = kwargs.get('save_format', 'safetensors')
@@ -143,7 +143,7 @@ class LoRMConfig:
         })
 
 
-NetworkType = Literal['lora', 'locon', 'lorm', 'lokr', 'adalora', 'dora'] # <--- ADD 'adalora', 'dora' to Literal
+NetworkType = Literal['lora', 'locon', 'lorm', 'lokr']
 
 
 class NetworkConfig:
@@ -157,21 +157,11 @@ class NetworkConfig:
         elif linear is not None:
             self.rank: int = linear
             self.linear: int = linear
-        else: # Provide default if neither rank nor linear is specified
-            self.rank: int = 16 # Default rank
-            self.linear: int = 16 # Default linear
-
-        self.conv: int = kwargs.get('conv', 0) # Default to 0 instead of None
+        self.conv: int = kwargs.get('conv', None)
         self.alpha: float = kwargs.get('alpha', 1.0)
         self.linear_alpha: float = kwargs.get('linear_alpha', self.alpha)
-        self.conv_alpha: float = kwargs.get('conv_alpha', self.conv) # Use conv default
-
-        # New attributes for NetworkConfig (matching the ones being passed from BaseSDTrainProcess)
-        self.dropout: Optional[float] = kwargs.get('dropout', None)
-        self.rank_dropout: Optional[float] = kwargs.get('rank_dropout', None)
-        self.module_dropout: Optional[float] = kwargs.get('module_dropout', None)
-        self.lora_dropout: float = kwargs.get('lora_dropout', 0.0)
-        
+        self.conv_alpha: float = kwargs.get('conv_alpha', self.conv)
+        self.dropout: Union[float, None] = kwargs.get('dropout', None)
         self.network_kwargs: dict = kwargs.get('network_kwargs', {})
 
         self.lorm_config: Union[LoRMConfig, None] = None
@@ -197,31 +187,11 @@ class NetworkConfig:
         # -1 automatically finds the largest factor
         self.lokr_factor = kwargs.get('lokr_factor', -1)
 
-        # --- NEW ATTRIBUTES FOR NETWORK CONFIG (start) ---
-        self.ignore_if_contains: Optional[List[str]] = kwargs.get('ignore_if_contains', [])
-        self.only_if_contains: Optional[List[str]] = kwargs.get('only_if_contains', [])
-        self.parameter_threshold: float = kwargs.get('parameter_threshold', 0.0)
-        self.attn_only: bool = kwargs.get('attn_only', False)
-        self.target_lin_modules: Optional[List[str]] = kwargs.get('target_lin_modules', [])
-        self.target_conv_modules: Optional[List[str]] = kwargs.get('target_conv_modules', [])
-        self.full_train_in_out: bool = kwargs.get('full_train_in_out', False)
-        self.peft_format: bool = kwargs.get('peft_format', False)
-        self.is_assistant_adapter: bool = kwargs.get('is_assistant_adapter', False)
-        # Adding adalora specific parameters that are passed through network_kwargs
-        # These are used by `lora_special.py` when it initializes `AdaLoraConfig`.
-        # They should be part of NetworkConfig to be parsed from YAML.
-        self.adalora_target_r: Optional[int] = kwargs.get('adalora_target_r', None)
-        self.adalora_init_r: Optional[int] = kwargs.get('adalora_init_r', None)
-        self.adalora_tinit: Optional[int] = kwargs.get('adalora_tinit', None)
-        self.adalora_tfinal: Optional[int] = kwargs.get('adalora_tfinal', None)
-        self.adalora_deltaT: Optional[int] = kwargs.get('adalora_deltaT', None)
-        self.adalora_beta1: Optional[float] = kwargs.get('adalora_beta1', None)
-        self.adalora_beta2: Optional[float] = kwargs.get('adalora_beta2', None)
-        self.adalora_orth_reg_weight: Optional[float] = kwargs.get('adalora_orth_reg_weight', None)
-        # --- NEW ATTRIBUTES FOR NETWORK CONFIG (end) ---
-
 
 AdapterTypes = Literal['t2i', 'ip', 'ip+', 'clip', 'ilora', 'photo_maker', 'control_net', 'control_lora', 'i2v']
+
+CLIPLayer = Literal['penultimate_hidden_states', 'image_embeds', 'last_hidden_state']
+
 
 class AdapterConfig:
     def __init__(self, **kwargs):
@@ -349,6 +319,8 @@ LossTarget = Literal['noise', 'source', 'unaugmented', 'differential_noise']
 class TrainConfig:
     def __init__(self, **kwargs):
         self.enable_ti = kwargs.get('enable_ti', False)
+        self.enable_ttb = kwargs.get('enable_ti', False)
+        self.early_stopping_num_epochs = kwargs.get('early_stopping_num_epochs', 30)
         self.noise_scheduler = kwargs.get('noise_scheduler', 'ddpm')
         self.content_or_style: ContentOrStyleType = kwargs.get('content_or_style', 'balanced')
         self.content_or_style_reg: ContentOrStyleType = kwargs.get('content_or_style', 'balanced')
