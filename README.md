@@ -1,5 +1,41 @@
 # Fine-Tuning and Inference with TI LoRAs
 
+## STRICT DATASET GATHERING AND ANNOTATION GUIDELINES
+- Collect 16-20 images of the character in diverse angles (close-up, mid-range and wide/long range shots)
+- In case the subject in question is a prop or a set/background, relatively fewer images will do
+- Gather images that match your final goal (Ex: If you want to show Allu Arjun with full mustache and beard, collect similar images for model fine-tuning)
+- Make sure to include several images of the character , among many others, where the face is crystal clear 
+- Assign a prompt for EVERY image in the dataset and use a unique `special token` for character identification (Ex: A photo of (([AA] man)) dancing in rain)
+- During dataset annotation, `**STRICTLY**` do not describe the facial and body features of the charcater, that will be taken care by the initializer concept
+
+  | Do ✅ |  Don't ❌ |
+  | ----------- | ------------ |
+  |  A photo of (([AA] man)) dancing in rain  | A photo of (([AA] man)) in his early 30s, muscular build, dusky skin tone, tall, dancing in rain | 
+
+
+- The special token and the class should appear `**ONLY ONCE**` in the dataset annotations
+
+  | Do ✅ |  Don't ❌ |
+  | ----------- | ------------ |
+  | A photo of (([AA] man)), wearing a red shirt, dancing in rain | A photo of (([AA] man)), dancing in rain, where (([AA] man)) is wearing a red shirt | 
+
+
+- Keep the annotation prompts simple and crisp
+- For the initializer concept, only describe the following aspects of a character: age, ethinicity, skin colour, height, specific facial and hair features, body features
+- `**DO NOT**` provide the character's special token, clothing, expression and posture, etc in the initializer concept
+
+  | Do ✅ |  Don't ❌ |
+  | ------- | ----- |
+  | A 30 year old Indian man, 6 feet tall, muscular build, dusky skin tone, sharp nose and jawline | (([AA] man)) tall, curly long hair, wearing pink shirt, confident expression |
+
+
+
+## CLI Running
+
+```bash
+AITK_JOB_ID=<any_random_number> python3 run.py <path/to/your/config.yaml>
+```
+
 ## H200s Dev Set-Up
 
 In config:
@@ -113,6 +149,12 @@ Do the same if there are more than one datasets to be trained after clicking on 
 
 
 ### On NVIDIA H100 GPUs - dheyo_nvidia Branch
+
+Command to run from the terminal:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 AITK_JOB_ID=<any_random_number> python3 run.py <path_to_your_config_file>
+```
 
 - Login to dheyo01 VSCode on `lh100.dheyo.ai` with password `Gailen804!`
 
