@@ -5,19 +5,20 @@
 - In case the subject in question is a prop or a set/background, relatively fewer images will do
 - Gather images that match your final goal (Ex: If you want to show Allu Arjun with full mustache and beard, collect similar images for model fine-tuning)
 - Make sure to include several images of the character , among many others, where the face is crystal clear 
-- Assign a prompt for EVERY image in the dataset and use a unique `special token` for character identification (Ex: A photo of (([AA] man)) dancing in rain)
+- Assign a prompt for EVERY image in the dataset and use a unique `special token` for character identification (Ex: A photo of ((allu_arjun man)) dancing in rain)
+- A common convention for the special token is to **provide the first name and the last name of the character delimited by an underscore** (Ex: allu_arjun)
 - During dataset annotation, `**STRICTLY**` do not describe the facial and body features of the charcater, that will be taken care by the initializer concept
 
   | Do ✅ |  Don't ❌ |
   | ----------- | ------------ |
-  |  A photo of (([AA] man)) dancing in rain  | A photo of (([AA] man)) in his early 30s, muscular build, dusky skin tone, tall, dancing in rain | 
+  |  A photo of ((allu_arjun man)) dancing in rain  | A photo of ((allu_arjun man)) in his early 30s, muscular build, dusky skin tone, tall, dancing in rain | 
 
 
 - The special token and the class should appear `**ONLY ONCE**` in the dataset annotations
 
   | Do ✅ |  Don't ❌ |
   | ----------- | ------------ |
-  | A photo of (([AA] man)), wearing a red shirt, dancing in rain | A photo of (([AA] man)), dancing in rain, where (([AA] man)) is wearing a red shirt | 
+  | A photo of ((allu_arjun man)), wearing a red shirt, dancing in rain | A photo of ((allu_arjun man)), dancing in rain, where ((allu_arjun man)) is wearing a red shirt | 
 
 
 - Keep the annotation prompts simple and crisp
@@ -26,7 +27,7 @@
 
   | Do ✅ |  Don't ❌ |
   | ------- | ----- |
-  | A 30 year old Indian man, 6 feet tall, muscular build, dusky skin tone, sharp nose and jawline | (([AA] man)) tall, curly long hair, wearing pink shirt, confident expression |
+  | A 30 year old Indian man, 6 feet tall, muscular build, dusky skin tone, sharp nose and jawline | ((allu_arjun man)) tall, curly long hair, wearing pink shirt, confident expression |
 
 
 ## Sample Config File
