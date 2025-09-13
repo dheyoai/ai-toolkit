@@ -2199,6 +2199,8 @@ class BaseSDTrainProcess(BaseTrainProcess):
         # new_epoch = False
         end_epoch = False
         epoch_loss_dict = {"epoch_loss": 0.0}
+        total_dataset_size = 0
+
         last_saved = 0 ## if there is no change overall loss in last_saved number of epochs, we end the training loop!!! 😔
         print(f"\n\nInitialised epoch loss dict with epoch loss = 0.0\n\n")
         for step in range(start_step_num, self.train_config.steps):
@@ -2312,12 +2314,11 @@ class BaseSDTrainProcess(BaseTrainProcess):
             with self.accelerator.accumulate(self.modules_being_trained):
                 try:
                     loss_dict = self.hook_train_loop(batch_list)
-                    epoch_loss_dict["epoch_loss"] += loss_dict["loss"]
-                    print(f"\n\nEpoch loss dict is updated with mini batch/bucket loss: {epoch_loss_dict['epoch_loss']}\n\n")
-                    # if loss_dict.get("epoch_loss"):
-                    #     loss_dict["epoch_loss"] += loss_dict["loss"]
-                    # else:
-                    #     loss_dict["epoch_loss"] = 0.0
+                    epoch_loss_dict["epoch_loss"] += (loss_dict["loss"] * batch_list[0].tensor.numel())
+                    if self.epoch_num == 0:
+                        total_dataset_size += batch_list[0].tensor.numel()
+                    # print(f"\n\nEpoch loss dict is updated with mini batch/bucket loss: {epoch_loss_dict['epoch_loss']}\n\n")
+
                 except Exception as e:
                     traceback.print_exc()
                     #print batch info
@@ -2398,6 +2399,9 @@ class BaseSDTrainProcess(BaseTrainProcess):
                         # print above the progress bar
                         if self.progress_bar is not None:
                             self.progress_bar.pause()
+
+                        epoch_loss_dict["epoch_loss"] = epoch_loss_dict["epoch_loss"] / total_dataset_size   
+                        print(f"\n\nTotal dataset size: {total_dataset_size} | Epoch-{self.epoch_num} loss: {epoch_loss_dict['epoch_loss']}\n\n")
 
                         if start_saving_after:
                             greatest_loss_and_step = sorted(self.loss_and_step_list, key=lambda x: x[0])[-1] if len(self.loss_and_step_list) > 0 else None
