@@ -1612,6 +1612,8 @@ class BaseSDTrainProcess(BaseTrainProcess):
 
 
     def save_preprocessed_images (self, batch_list):
+        # if self.accelerator.is_main_process:
+        #     import pdb; pdb.set_trace()
         for processed_tensor in batch_list[0].tensor:
             temp_tensor = processed_tensor.cpu()
             temp_tensor = (temp_tensor - temp_tensor.min()) / (temp_tensor.max() - temp_tensor.min())
@@ -2110,6 +2112,10 @@ class BaseSDTrainProcess(BaseTrainProcess):
 
         lr_scheduler_params = self.train_config.lr_scheduler_params
 
+        #### effective number of steps
+        self.train_config.steps = self.train_config.steps * self.accelerator.num_processes
+        if self.accelerator.is_main_process:
+            print(f"Effective number of steps: {self.train_config.steps} | Num. GPUs: {self.accelerator.num_processes}")
         # make sure it had bare minimum
         if 'max_iterations' not in lr_scheduler_params:
             lr_scheduler_params['total_iters'] = self.train_config.steps
@@ -2129,6 +2135,12 @@ class BaseSDTrainProcess(BaseTrainProcess):
         if self.datasets_reg is not None:
             self.data_loader_reg = get_dataloader_from_datasets(self.datasets_reg, self.train_config.batch_size,
                                                                 self.sd)
+
+        self.data_loader = self.accelerator.prepare(self.data_loader)
+        # if self.accelerator.is_main_process:
+            # import pdb; pdb.set_trace()
+        if self.data_loader_reg is not None:
+            self.data_loader_reg = self.accelerator.prepare(self.data_loader_reg)
 
         flush()
         self.last_save_step = self.step_num
@@ -2202,7 +2214,8 @@ class BaseSDTrainProcess(BaseTrainProcess):
         total_dataset_size = 0
 
         last_saved = 0 ## if there is no change overall loss in last_saved number of epochs, we end the training loop!!! 😔
-        print(f"\n\nInitialised epoch loss dict with epoch loss = 0.0\n\n")
+        if self.accelerator.is_main_process:
+            print(f"\n\nInitialised epoch loss dict with epoch loss = 0.0\n\n")
         for step in range(start_step_num, self.train_config.steps):
             if self.train_config.do_paramiter_swapping:
                 self.optimizer.optimizer.swap_paramiters()
@@ -2257,10 +2270,14 @@ class BaseSDTrainProcess(BaseTrainProcess):
                         try:
                             with self.timer('get_batch'):
                                 batch = next(dataloader_iterator)
-                                num_steps_in_epoch = sum([len(dataloader.dataset.datasets[j].batch_indices) for j in range(len(dataloader.dataset.datasets))])
+                                # num_steps_in_epoch = sum([len(dataloader.dataset.datasets[j].batch_indices) for j in range(len(dataloader.dataset.datasets))])
+                                num_steps_in_epoch = len(dataloader)
+                                # if self.accelerator.is_main_process:
+                                #     import pdb; pdb.set_trace()
                                 if (self.step_num + 1) % num_steps_in_epoch == 0:
                                     end_epoch = True
-                                    print(f"This is the last iteration of epoch-{self.epoch_num}")
+                                    if self.accelerator.is_main_process:
+                                        print(f"This is the last iteration of epoch-{self.epoch_num}")
                         except StopIteration:
                             with self.timer('reset_batch'):
                                 # hit the end of an epoch, reset
@@ -2269,7 +2286,8 @@ class BaseSDTrainProcess(BaseTrainProcess):
                                 dataloader_iterator = iter(dataloader)
                                 trigger_dataloader_setup_epoch(dataloader)
                                 self.epoch_num += 1
-                                print(f"\n\nEpoch-{self.epoch_num} will now begin\n\n")
+                                if self.accelerator.is_main_process:
+                                    print(f"\n\nEpoch-{self.epoch_num} will now begin\n\n")
 
                                 # new_epoch = True ##
                                 # print(f"\n\nNew epoch begins now\n\n")
@@ -2289,8 +2307,11 @@ class BaseSDTrainProcess(BaseTrainProcess):
                     batch_list.append(batch)
                     batch_step += 1
 
-                if self.epoch_num == 0:
-                    self.save_preprocessed_images(batch_list)
+                # if self.accelerator.is_main_process:
+                #     import pdb; pdb.set_trace()
+                # batch_list = batch_list[0]
+                # if self.epoch_num == 0:
+                #     self.save_preprocessed_images(batch_list)
 
 
                 # setup accumulation
@@ -2313,10 +2334,27 @@ class BaseSDTrainProcess(BaseTrainProcess):
                 self.torch_profiler.start()
             with self.accelerator.accumulate(self.modules_being_trained):
                 try:
+                    # if self.accelerator.is_main_process:
+                    #     import pdb; pdb.set_trace()
                     loss_dict = self.hook_train_loop(batch_list)
-                    epoch_loss_dict["epoch_loss"] += (loss_dict["loss"] * batch_list[0].tensor.numel())
+
+                    # ####
+                    local_loss_sum = loss_dict["loss"] * batch_list[0].tensor.numel()
+                    local_size = torch.tensor(batch_list[0].tensor.numel(), device=self.accelerator.device)
+
+                    gathered_loss_sum = self.accelerator.gather(local_loss_sum)
+                    gathered_size = self.accelerator.gather(local_size)
+
+                    epoch_loss_dict["epoch_loss"] += gathered_loss_sum.sum().item()
                     if self.epoch_num == 0:
-                        total_dataset_size += batch_list[0].tensor.numel()
+                        total_dataset_size += gathered_size.sum().item()
+                    # ####
+
+
+
+                    # epoch_loss_dict["epoch_loss"] += (loss_dict["loss"] * batch_list[0].tensor.numel())
+                    # if self.epoch_num == 0:
+                    #     total_dataset_size += batch_list[0].tensor.numel()
                     # print(f"\n\nEpoch loss dict is updated with mini batch/bucket loss: {epoch_loss_dict['epoch_loss']}\n\n")
 
                 except Exception as e:
@@ -2401,12 +2439,14 @@ class BaseSDTrainProcess(BaseTrainProcess):
                             self.progress_bar.pause()
 
                         epoch_loss_dict["epoch_loss"] = epoch_loss_dict["epoch_loss"] / total_dataset_size   
-                        print(f"\n\nTotal dataset size: {total_dataset_size} | Epoch-{self.epoch_num} loss: {epoch_loss_dict['epoch_loss']}\n\n")
+                        if self.accelerator.is_main_process:
+                            print(f"\n\nTotal dataset size: {total_dataset_size} | Epoch-{self.epoch_num} loss: {epoch_loss_dict['epoch_loss']}\n\n")
 
                         if start_saving_after:
                             greatest_loss_and_step = sorted(self.loss_and_step_list, key=lambda x: x[0])[-1] if len(self.loss_and_step_list) > 0 else None
                             if len(self.loss_and_step_list) > 0 and epoch_loss_dict["epoch_loss"] <= greatest_loss_and_step[0]:
-                                print(f"\n\nCurrent step-{self.step_num} (epoch-{self.epoch_num}) loss is less than or equal to the loss at step-{greatest_loss_and_step[1]} ({epoch_loss_dict['epoch_loss']} <= {greatest_loss_and_step[0]})\n\n")
+                                if self.accelerator.is_main_process:
+                                    print(f"\n\nCurrent step-{self.step_num} (epoch-{self.epoch_num}) loss is less than or equal to the loss at step-{greatest_loss_and_step[1]} ({epoch_loss_dict['epoch_loss']} <= {greatest_loss_and_step[0]})\n\n")
                                 self.loss_and_step_list.append((epoch_loss_dict["epoch_loss"], self.step_num))
                                 print_acc(f"\nSaving at step {self.step_num}")
                                 self.save(self.step_num)
@@ -2428,7 +2468,8 @@ class BaseSDTrainProcess(BaseTrainProcess):
                         # print(f"\n\nNew epoch begins now\n\n")
                         loss_dict["epoch_loss"] = epoch_loss_dict["epoch_loss"] ## so that it can reflect in tensorboard logs
                         epoch_loss_dict["epoch_loss"] = 0.0
-                        print(f"\n\nEpoch loss dict is reset to epoch loss = 0.0\n\n")
+                        if self.accelerator.is_main_process:
+                            print(f"\n\nEpoch loss dict is reset to epoch loss = 0.0\n\n")
                         # new_epoch = False
                         end_epoch = False
                         # epoch_loss_dict["epoch_loss"] = 0.0
@@ -2445,6 +2486,7 @@ class BaseSDTrainProcess(BaseTrainProcess):
                             self.progress_bar.pause()
                         with self.timer('log_to_tensorboard'):
                             # log to tensorboard
+                            # self.accelerator.gather(loss_dict["loss"])
                             if self.accelerator.is_main_process:
                                 if self.writer is not None:
                                     for key, value in loss_dict.items():
@@ -2501,7 +2543,8 @@ class BaseSDTrainProcess(BaseTrainProcess):
                 self.end_step_hook()
 
             if last_saved == self.train_config.early_stopping_num_epochs:
-                print(f"\n\nTriggering early stopping as there was no downward trend in the aggregate loss in last {last_saved} epoch(s)\n\n")
+                if self.accelerator.is_main_process:
+                    print(f"\n\nTriggering early stopping as there was no downward trend in the aggregate loss in last {last_saved} epoch(s)\n\n")
                 self.end_training_loop(unet, noise_scheduler, optimizer, tokenizer, text_encoder)
                 break
 

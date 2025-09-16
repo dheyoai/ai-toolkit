@@ -1887,7 +1887,8 @@ class SDTrainer(BaseSDTrainProcess):
                     for i in range(len(self.params)):
                         self.accelerator.clip_grad_norm_(self.params[i]['params'], self.train_config.max_grad_norm)
                 else:
-                    self.accelerator.clip_grad_norm_(self.params, self.train_config.max_grad_norm)
+                    if self.accelerator.sync_gradients:
+                        self.accelerator.clip_grad_norm_(self.params, self.train_config.max_grad_norm)
             # only step if we are not accumulating
             with self.timer('optimizer_step'):
                 self.optimizer.step()

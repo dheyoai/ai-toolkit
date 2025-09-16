@@ -638,9 +638,15 @@ def get_dataloader_from_datasets(
 
     def dto_collation(batch: List['FileItemDTO']):
         # create DTO batch
+
+        if len(batch) == 1 and isinstance(batch[0], list):
+            batch = batch[0]
+
         batch = DataLoaderBatchDTO(
             file_items=batch
         )
+        # import pdb; pdb.set_trace()
+
         return batch
 
     # check if is caching latents
@@ -660,11 +666,16 @@ def get_dataloader_from_datasets(
             assert dataset.dataset_config.buckets, f"buckets not found on dataset {dataset.dataset_config.folder_path}, you either need all buckets or none"
 
         data_loader = DataLoader(
+            # concatenated_dataset,
+            # batch_size=None,  # we batch in the datasets for now
+            # drop_last=False,
+            # shuffle=True,
+            # collate_fn=dto_collation,  # Use the custom collate function
+            # **dataloader_kwargs
             concatenated_dataset,
-            batch_size=None,  # we batch in the datasets for now
-            drop_last=False,
+            batch_size=1,  # treat each dataset item as one "batch"
             shuffle=True,
-            collate_fn=dto_collation,  # Use the custom collate function
+            collate_fn=dto_collation,  # unwrap single element
             **dataloader_kwargs
         )
     else:

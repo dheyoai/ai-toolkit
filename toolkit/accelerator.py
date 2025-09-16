@@ -8,6 +8,7 @@ def get_accelerator() -> Accelerator:
     global global_accelerator
     if global_accelerator is None:
         global_accelerator = Accelerator()
+        global_accelerator.even_batches = False
     return global_accelerator
 
 def unwrap_model(model):
