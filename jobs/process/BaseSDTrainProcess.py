@@ -9,7 +9,7 @@ import os
 import re
 import traceback
 from typing import Union, List, Optional
-
+import math
 import numpy as np
 import yaml
 from diffusers import T2IAdapter, ControlNetModel
@@ -2113,7 +2113,7 @@ class BaseSDTrainProcess(BaseTrainProcess):
         lr_scheduler_params = self.train_config.lr_scheduler_params
 
         #### effective number of steps
-        self.train_config.steps = self.train_config.steps * self.accelerator.num_processes
+        self.train_config.steps = math.ceil(self.train_config.steps / self.accelerator.num_processes)
         if self.accelerator.is_main_process:
             print(f"Effective number of steps: {self.train_config.steps} | Num. GPUs: {self.accelerator.num_processes}")
         # make sure it had bare minimum
@@ -2339,7 +2339,7 @@ class BaseSDTrainProcess(BaseTrainProcess):
                     loss_dict = self.hook_train_loop(batch_list)
 
                     # ####
-                    local_loss_sum = loss_dict["loss"] * batch_list[0].tensor.numel()
+                    local_loss_sum = torch.tensor(loss_dict["loss"], device=self.accelerator.device) * batch_list[0].tensor.numel()
                     local_size = torch.tensor(batch_list[0].tensor.numel(), device=self.accelerator.device)
 
                     gathered_loss_sum = self.accelerator.gather(local_loss_sum)
