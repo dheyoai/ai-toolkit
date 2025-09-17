@@ -838,10 +838,13 @@ class BaseSDTrainProcess(BaseTrainProcess):
         
         # # prepare all the models stuff for accelerator (hopefully we dont miss any)
         self.sd.vae = self.accelerator.prepare(self.sd.vae)
+        self.modules_being_trained = [] 
+    
         if self.sd.unet is not None:
             self.sd.unet = self.accelerator.prepare(self.sd.unet)
-            # todo always tdo it?
-            self.modules_being_trained.append(self.sd.unet)
+            if self.train_config.train_unet:
+                 self.modules_being_trained.append(self.sd.unet)
+
         if self.sd.text_encoder is not None and self.train_config.train_text_encoder:
             if isinstance(self.sd.text_encoder, list):
                 self.sd.text_encoder = [self.accelerator.prepare(model) for model in self.sd.text_encoder]
@@ -849,13 +852,16 @@ class BaseSDTrainProcess(BaseTrainProcess):
             else:
                 self.sd.text_encoder = self.accelerator.prepare(self.sd.text_encoder)
                 self.modules_being_trained.append(self.sd.text_encoder)
+    
         if self.sd.refiner_unet is not None and self.train_config.train_refiner:
             self.sd.refiner_unet = self.accelerator.prepare(self.sd.refiner_unet)
             self.modules_being_trained.append(self.sd.refiner_unet)
-        # todo, do we need to do the network or will "unet" get it?
-        if self.sd.network is not None:
+    
+    # Conditionally add self.sd.network for non-AdaLoRA types
+        if self.sd.network is not None and self.sd.network.network_type.lower() != "adalora":
             self.sd.network = self.accelerator.prepare(self.sd.network)
             self.modules_being_trained.append(self.sd.network)
+
         if self.adapter is not None and self.adapter_config.train:
             # todo adapters may not be a module. need to check
             self.adapter = self.accelerator.prepare(self.adapter)
@@ -2059,6 +2065,8 @@ class BaseSDTrainProcess(BaseTrainProcess):
         #         self.params += param['params']
         #     else:
         #         self.params.append(param)
+        if self.network_config is not None and self.network_config.type.lower() == "adalora":
+            self.network_config.adalora_total_step = self.train_config.steps
 
         if self.train_config.start_step is not None:
             self.step_num = self.train_config.start_step
@@ -2332,6 +2340,27 @@ class BaseSDTrainProcess(BaseTrainProcess):
                 
                 print("\n==== Profile Results ====")
                 print(self.torch_profiler.key_averages().table(sort_by="cpu_time_total", row_limit=1000))
+            
+            if self.network is not None and self.network.network_type.lower() == "adalora":
+                self.network.update_and_allocate_adalora(self.step_num) 
+                
+                adalora_config = self.network.network_config
+                is_adalora_rank_log_step = (
+                    adalora_config.adalora_deltaT > 0 and (self.step_num % adalora_config.adalora_deltaT == 0)
+                ) or (self.step_num == adalora_config.adalora_tinit) # Log at tinit start as well
+
+                if is_adalora_rank_log_step: # Only log if it's an AdaLoRA rank update step
+                    rank_patterns = self.network.get_adalora_rank_pattern()
+                    if rank_patterns:
+                        print_acc(f"AdaLoRA Rank Pattern at step {self.step_num}:")
+                        for component, pattern_dict in rank_patterns.items():
+                            print_acc(f"  {component}: {json.dumps(pattern_dict, indent=2)}")
+                            if self.accelerator.is_main_process and self.writer is not None:
+                                if isinstance(pattern_dict, dict):
+                                    for module_name, rank_value in pattern_dict.items():
+                                        tb_module_name = module_name.replace("/", "_").replace(".", "_").replace("$$", "_")
+                                        self.writer.add_scalar(f"adalora_ranks/{component}/{tb_module_name}", rank_value, self.step_num)
+            
             self.timer.stop('train_loop')
             if not did_first_flush:
                 flush()

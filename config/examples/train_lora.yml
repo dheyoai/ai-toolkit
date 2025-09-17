@@ -3,8 +3,8 @@ config:
   name: ab_qwenimage
   process:
   - type: sd_trainer
-    training_folder: /root/varunika/img/ai-toolkit/output
-    log_dir: /root/varunika/img/ai-toolkit/output/ab_qwenimage/tensorboard
+    training_folder: /home/varunika/ai-toolkit/output
+    log_dir: /home/varunika/ai-toolkit/output/ab_qwenimage/tensorboard
     device: cuda
     trigger_word: null
     performance_log_every: 10
@@ -20,13 +20,13 @@ config:
         ignore_if_contains: []
     save:
       dtype: bf16
-      save_every: 250
-      start_saving_after: 1000 ## steps
+      save_every: 1000
+      start_saving_after: 2000 ## steps
       max_step_saves_to_keep: 4
       save_format: diffusers
       push_to_hub: false
     datasets:
-    - folder_path: /root/varunika/img/ai-toolkit/datasets/alia_bhatt
+    - folder_path: /home/varunika/ai-toolkit/datasets/alia_bhatt
       control_path: null
       mask_path: null
       mask_min_value: 0.1

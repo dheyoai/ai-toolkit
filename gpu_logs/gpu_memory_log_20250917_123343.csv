@@ -1,0 +1,8 @@
+timestamp,index,name,driver_version,temperature.gpu,utilization.gpu,utilization.memory,memory.total,memory.free,memory.used,power.draw,power.limit,clocks.current.graphics,clocks.current.memory,fan.speed
+2025-09-17_12:33:43,,,,
+2025-09-17_12:33:48,,,,
+2025-09-17_12:33:53,,,,
+2025-09-17_12:33:58,,,,
+2025-09-17_12:34:03,,,,
+2025-09-17_12:34:08,,,,
+2025-09-17_12:34:13,,,,

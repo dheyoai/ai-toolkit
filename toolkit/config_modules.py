@@ -143,7 +143,7 @@ class LoRMConfig:
         })
 
 
-NetworkType = Literal['lora', 'locon', 'lorm', 'lokr']
+NetworkType = Literal['lora', 'locon', 'lorm', 'lokr', 'adalora'] # change 1
 
 
 class NetworkConfig:
@@ -184,8 +184,17 @@ class NetworkConfig:
             self.linear_alpha = 9999999999
             self.conv = 9999999999
             self.conv_alpha = 9999999999
-        # -1 automatically finds the largest factor
+        # change 2
         self.lokr_factor = kwargs.get('lokr_factor', -1)
+        self.adalora_init_r: int = kwargs.get('adalora_init_r', 12)
+        self.adalora_target_r: int = kwargs.get('adalora_target_r', 8)
+        self.adalora_tinit: int = kwargs.get('adalora_tinit', 0)
+        self.adalora_tfinal: int = kwargs.get('adalora_tfinal', 0)
+        self.adalora_deltaT: int = kwargs.get('adalora_deltaT', 1)
+        self.adalora_beta1: float = kwargs.get('adalora_beta1', 0.85)
+        self.adalora_beta2: float = kwargs.get('adalora_beta2', 0.85)
+        self.adalora_orth_reg_weight: float = kwargs.get('adalora_orth_reg_weight', 0.5)
+        self.adalora_total_step: Optional[int] = kwargs.get('adalora_total_step', None) 
 
 
 AdapterTypes = Literal['t2i', 'ip', 'ip+', 'clip', 'ilora', 'photo_maker', 'control_net', 'control_lora', 'i2v']

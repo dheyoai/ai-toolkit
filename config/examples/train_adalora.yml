@@ -1,164 +1,114 @@
----
 job: extension
 config:
-  name: "adalora_alia_bhatt_consistent"
+  name: ab_adalora_mod 
   process:
-    - type: 'sd_trainer'
-      training_folder: "/root/varunika/img/ai-toolkit/output"
-      log_dir: "/root/varunika/img/ai-toolkit/output/adalora_alia_bhatt_consistent/tensorboard"
-      device: cuda:0
-      trigger_word: null
-      performance_log_every: 10
-
-      # AGGRESIVE SETTINGS
-      network:
-        type: "adalora"
-        linear: 64 
-        linear_alpha: 64
-        lora_dropout: 0.0
-        conv: 16 
-        conv_alpha: 16 
-        lokr_full_rank: true 
-        lokr_factor: -1 
-
-        adalora_target_r: 4 
-        adalora_init_r: 64 
-        adalora_tinit: 250 
-        adalora_tfinal: 100 
-        adalora_deltaT: 5 
-        adalora_beta1: 0.85
-        adalora_beta2: 0.85
-        adalora_orth_reg_weight: 1.0 
-
-      # # LENIENT SETTINGS
-      # network:
-      #   type: "adalora"
-      #   linear: 32
-      #   linear_alpha: 32
-      #   lora_dropout: 0.0
-      #   conv: 16 
-      #   conv_alpha: 16 
-      #   lokr_full_rank: true 
-      #   lokr_factor: -1 
-
-      #   adalora_target_r: 24 
-      #   adalora_init_r: 32
-      #   adalora_tinit: 3500 
-      #   adalora_tfinal: 1750 
-      #   adalora_deltaT: 20 
-      #   adalora_beta1: 0.85
-      #   adalora_beta2: 0.85
-      #   adalora_orth_reg_weight: 0.1 
-        
-
-      # # MODERATE SETTINGS
-      # network:
-      #   type: "adalora"
-      #   linear: 32
-      #   linear_alpha: 32
-      #   lora_dropout: 0.0
-      #   conv: 16
-      #   conv_alpha: 16
-      #   lokr_full_rank: true
-      #   lokr_factor: -1
-
-      #   adalora_target_r: 8
-      #   adalora_init_r: 32
-      #   adalora_tinit: 1750 
-      #   adalora_tfinal: 875 
-      #   adalora_deltaT: 10
-      #   adalora_beta1: 0.85
-      #   adalora_beta2: 0.85
-      #   adalora_orth_reg_weight: 0.5
-        
-        network_kwargs:
-          only_if_contains: 
-            - ".*attn.*" 
-
-      save:
-        dtype: bf16 
-        save_every: 250
-        max_step_saves_to_keep: 4 
-        save_format: diffusers
-        push_to_hub: false 
-
-      datasets:
-        - folder_path: "/root/varunika/img/datasets/datasets/alia_bhatt" # UPDATE THIS
-          control_path: null
-          mask_path: null
-          mask_min_value: 0.1
-          trigger_token: '[AB]'
-          initializer_concept: "A 34 year old Indian woman, 5 feet 1 inch tall, fair skin, slim build, slim jawline, dimples on cheeks"
-          default_caption: ''
-          caption_ext: txt
-          caption_dropout_rate: 0
-          cache_latents_to_disk: false
-          is_reg: false
-          network_weight: 1
-          resolution:
-          - 512
-          - 768
-          - 1024
-          controls: []
-          shrink_video_to_frames: true
-          num_frames: 1
-          do_i2v: true
-
-      train:
-        batch_size: 1 # OOM Fix
-        bypass_guidance_embedding: false
-        steps: 7000
-        gradient_accumulation: 2 # OOM Fix
-        train_unet: true 
-        train_text_encoder: false
-        gradient_checkpointing: true 
-        noise_scheduler: flowmatch
-        optimizer: adamw8bit # OOM Fix
-        timestep_type: weighted
-        content_or_style: balanced
-        optimizer_params:
-          weight_decay: 0.0001
-        enable_ti: true 
-        enable_ttb: false
-        unload_text_encoder: false
-        cache_text_embeddings: false
-        lr: 0.0001
-        ema_config:
-          use_ema: false
-          ema_decay: 0.99
-        skip_first_sample: false
-        disable_sampling: false
-        dtype: bf16
-        diff_output_preservation: false
-        diff_output_preservation_multiplier: 1
-        diff_output_preservation_class: person
-
-      model:
-        name_or_path: "Qwen/Qwen-Image" 
-        quantize: false
-        qtype: qfloat8
-        quantize_te: false
-        qtype_te: qfloat8
-        arch: qwen_image
-        low_vram: false
-        model_kwargs: {}
-
-      sample:
-        sampler: flowmatch
-        sample_every: 250
-        width: 1664
-        height: 928
-        samples:
-          - prompt: "A close-up portrait of ([AB] woman) smiling, soft natural light, bokeh background."
-          - prompt: "A full-body shot of ([AB] woman) walking in a bustling city street, vibrant atmosphere."
-        neg: ''
-        seed: 42
-        walk_seed: true
-        guidance_scale: 4
-        sample_steps: 25
-        num_frames: 1
-        fps: 1
-
+  - type: sd_trainer
+    training_folder: /home/varunika/ai-toolkit/output
+    log_dir: /home/varunika/ai-toolkit/output/ab_adalora_mod/tensorboard 
+    device: cuda
+    trigger_word: null
+    performance_log_every: 10
+    network:
+      type: adalora 
+      linear: 32 
+      linear_alpha: 32
+      conv: 16
+      conv_alpha: 16
+      lokr_full_rank: true
+      lokr_factor: -1
+      network_kwargs:
+        ignore_if_contains: []
+      adalora_init_r: 32           
+      adalora_target_r: 24          
+      adalora_tinit: 500           
+      adalora_tfinal: 1000         
+      adalora_deltaT: 100          
+      adalora_beta1: 0.85          
+      adalora_beta2: 0.85          
+      adalora_orth_reg_weight: 0.5 
+    save:
+      dtype: bf16
+      save_every: 1000
+      start_saving_after: 2000 
+      max_step_saves_to_keep: 4
+      save_format: diffusers
+      push_to_hub: false
+    datasets:
+    - folder_path: /home/varunika/ai-toolkit/datasets/alia_bhatt 
+      control_path: null
+      mask_path: null
+      mask_min_value: 0.1
+      trigger_token: '[AB]'
+      initializer_concept: A 34 year old Indian woman, 5 feet 1 inch tall, fair skin, slim build, slim jawline, dimples on cheeks
+      default_caption: ''
+      caption_ext: txt
+      caption_dropout_rate: 0
+      cache_latents_to_disk: false
+      is_reg: false
+      network_weight: 1
+      resolution:
+      - 512
+      - 768
+      - 1024
+      controls: []
+      shrink_video_to_frames: true
+      num_frames: 1
+      do_i2v: true
+    train:
+      batch_size: 2
+      bypass_guidance_embedding: false
+      steps: 5000
+      gradient_accumulation: 1
+      train_unet: true
+      train_text_encoder: false
+      gradient_checkpointing: true
+      noise_scheduler: flowmatch
+      optimizer: adamw
+      timestep_type: weighted
+      content_or_style: balanced
+      optimizer_params:
+        weight_decay: 0.0001
+      enable_ti: true
+      enable_ttb: false
+      early_stopping_num_epochs: 20 
+      unload_text_encoder: false
+      cache_text_embeddings: false
+      lr: 0.0001
+      ema_config:
+        use_ema: false
+        ema_decay: 0.99
+      skip_first_sample: false
+      disable_sampling: false
+      dtype: bf16
+      diff_output_preservation: false
+      diff_output_preservation_multiplier: 1
+      diff_output_preservation_class: person
+    model:
+      name_or_path: Qwen/Qwen-Image
+      quantize: false
+      qtype: qfloat8
+      quantize_te: false
+      qtype_te: qfloat8
+      arch: qwen_image
+      low_vram: false
+      model_kwargs: {}
+    sample:
+      sampler: flowmatch
+      sample_every: 250
+      width: 1664
+      height: 928
+      samples:
+      - prompt: A close-up shot of (([AB] woman)) in a rugged leather jacket, standing
+          against a graffiti wall.
+      - prompt: A medium-length portrait of (([AB] woman)) in a garden.
+      - prompt: A full length shot of (([AB] woman)) wearing a white shirt, looking furious.
+      neg: ''
+      seed: 42
+      walk_seed: true
+      guidance_scale: 4
+      sample_steps: 25
+      num_frames: 1
+      fps: 1
 meta:
-  name: "adalora_alia_bhatt_consistent"
+  name: ab_adalora_mod 
   version: '1.0'
