@@ -17,15 +17,18 @@ from toolkit.paths import KEYMAPS_ROOT
 from toolkit.saving import get_lora_keymap_from_model_keymap
 from optimum.quanto import QBytesTensor
 import peft
+from peft import get_peft_model_state_dict, set_peft_model_state_dict  # Added imports for AdaLoRA
+
 if TYPE_CHECKING:
     from toolkit.lycoris_special import LycorisSpecialNetwork, LoConSpecialModule
     from toolkit.lora_special import LoRASpecialNetwork, LoRAModule
     from toolkit.stable_diffusion_model import StableDiffusion
     from toolkit.models.DoRA import DoRAModule
     from peft import PeftModel
+
 # Define Network and Module type hints here
 Network = Union['LycorisSpecialNetwork', 'LoRASpecialNetwork']
-Module = Union['LoConSpecialModule', 'LoRAModule', 'DoRAModule'] # FIX: Corrected Module type definition
+Module = Union['LoConSpecialModule', 'LoRAModule', 'DoRAModule']
 
 ExtractMode = Literal[
     'existing',
@@ -35,7 +38,6 @@ ExtractMode = Literal[
     'quantile',
     'percentage'
 ]
-
 
 def broadcast_and_multiply(tensor, multiplier):
     num_extra_dims = tensor.dim() - multiplier.dim()
@@ -52,7 +54,6 @@ def broadcast_and_multiply(tensor, multiplier):
         raise e
 
     return result
-
 
 def add_bias(tensor, bias):
     if bias is None:
@@ -79,7 +80,6 @@ def add_bias(tensor, bias):
         raise e
 
     return result
-
 
 class ExtractableModuleMixin:
     def extract_weight(
@@ -129,7 +129,6 @@ class ExtractableModuleMixin:
 
         if hasattr(self, 'scalar'):
             self.scalar.data = torch.tensor(1.0).to(self.scalar.device, self.scalar.dtype)
-
 
 class ToolkitModuleMixin:
     def __init__(
@@ -332,7 +331,6 @@ class ToolkitModuleMixin:
             extract_mode_param=extract_mode_param
         )
 
-
 class ToolkitNetworkMixin:
     def __init__(
             self: Network,
@@ -418,23 +416,22 @@ class ToolkitNetworkMixin:
             if base_model_instance is None:
                 raise ValueError("Base model reference is missing for AdaLoRA saving.")
 
-            if hasattr(base_model_instance, 'peft_adapted_text_encoders') and base_model_instance.peft_adapted_text_encoders: # Check the adapter list
+            if hasattr(base_model_instance, 'peft_adapted_text_encoders') and base_model_instance.peft_adapted_text_encoders:
                 for i, te_model in enumerate(base_model_instance.peft_adapted_text_encoders):
                     if isinstance(te_model, peft.PeftModel) and \
-                       hasattr(te_model, 'peft_config') and f"default_adalora_adapter_te_{i}" in te_model.peft_config: # Use self.peft_adapter_name
+                       hasattr(te_model, 'peft_config') and f"default_adalora_adapter_te_{i}" in te_model.peft_config:
                         te_state_dict = get_peft_model_state_dict(te_model, adapter_name=f"default_adalora_adapter_te_{i}")
                         for k, v in te_state_dict.items():
                             adapters_state_dict[f"text_encoder.{i}.{k}"] = v.detach().clone().to("cpu").to(dtype)
             
-            if hasattr(base_model_instance, 'peft_adapted_unet') and base_model_instance.peft_adapted_unet: # Check the adapter directly
+            if hasattr(base_model_instance, 'peft_adapted_unet') and base_model_instance.peft_adapted_unet:
                 if isinstance(base_model_instance.peft_adapted_unet, peft.PeftModel) and \
-                   hasattr(base_model_instance.peft_adapted_unet, 'peft_config') and "default_adalora_adapter_unet" in base_model_instance.peft_adapted_unet.peft_config: # Use self.peft_adapter_name
+                   hasattr(base_model_instance.peft_adapted_unet, 'peft_config') and "default_adalora_adapter_unet" in base_model_instance.peft_adapted_unet.peft_config:
                     unet_state_dict = get_peft_model_state_dict(base_model_instance.peft_adapted_unet, adapter_name="default_adalora_adapter_unet")
-                    for k,v in unet_state_dict.items():
+                    for k, v in unet_state_dict.items():
                         adapters_state_dict[f"transformer.{k}"] = v.detach().clone().to("cpu").to(dtype)
             
-            # --- Handle full_train_in_out modules ---
-            # These are attributes on the base_model_instance itself in AdaLoRA setup in lora_special.py
+            # Handle full_train_in_out modules
             if self.full_train_in_out:
                 if hasattr(base_model_instance, 'transformer_pos_embed'):
                     adapters_state_dict.update({"transformer_pos_embed." + k: v for k, v in base_model_instance.transformer_pos_embed.state_dict().items()})
@@ -450,14 +447,13 @@ class ToolkitNetworkMixin:
             
             return adapters_state_dict
 
-        save_dict = self.state_dict() # This calls the state_dict of the LoRASpecialNetwork itself
+        save_dict = self.state_dict()
         
         save_dict_formatted = OrderedDict()
         for key in list(save_dict.keys()):
             v = save_dict[key]
             v = v.detach().clone().to("cpu").to(dtype)
             
-            # --- Original keymap logic for non-AdaLoRA path restored ---
             keymap_for_lora = self.get_keymap()
             save_key = key
             if keymap_for_lora is not None and key in keymap_for_lora:
@@ -526,6 +522,7 @@ class ToolkitNetworkMixin:
 
     def load_weights(self: Network, file, force_weight_mapping=False):
         if self.network_type.lower() == "adalora":
+            from safetensors.torch import load_file
             adapter_state_dict = load_file(file, device="cpu")
             base_model_instance = self.base_model_ref()
             if base_model_instance is None:
@@ -583,7 +580,6 @@ class ToolkitNetworkMixin:
         if isinstance(file, str):
             if os.path.splitext(file)[1] == ".safetensors":
                 from safetensors.torch import load_file
-
                 weights_sd = load_file(file)
             else:
                 weights_sd = torch.load(file, map_location="cpu")
@@ -634,12 +630,10 @@ class ToolkitNetworkMixin:
             extra_dict = None
         return extra_dict
 
-    @torch.no_grad()
     def _update_torch_multiplier(self: Network):
         if self.network_type.lower() == "adalora":
             device = torch.device("cpu")
             dtype = torch.float32
-            # Determine device/dtype from the PEFT-adapted models if they exist
             if hasattr(self, 'peft_adapted_unet') and self.peft_adapted_unet is not None and isinstance(self.peft_adapted_unet, peft.PeftModel):
                 device = self.peft_adapted_unet.device
                 dtype = self.peft_adapted_unet.dtype
@@ -652,7 +646,7 @@ class ToolkitNetworkMixin:
                     dtype = self.peft_adapted_text_encoders.dtype
 
             self.torch_multiplier = torch.tensor(1.0).to(device, dtype=dtype)
-            return # Exit for AdaLoRA
+            return
 
         multiplier = self._multiplier
         try:
@@ -685,13 +679,13 @@ class ToolkitNetworkMixin:
     @property
     def multiplier(self) -> Union[float, List[float], List[List[float]]]:
         if self.network_type.lower() == "adalora":
-            return 1.0 # AdaLoRA does not use this property in the same way
+            return 1.0
         return self._multiplier
 
     @multiplier.setter
     def multiplier(self, value: Union[float, List[float], List[List[float]]]):
         if self.network_type.lower() == "adalora":
-            self._multiplier = value # Still store, but _update_torch_multiplier will bypass
+            self._multiplier = value
             return
 
         if self._multiplier == value:
@@ -707,7 +701,6 @@ class ToolkitNetworkMixin:
 
     def force_to(self: Network, device, dtype):
         if self.network_type.lower() == "adalora":
-            # For AdaLoRA, accelerator handles moving PEFT models.
             return
 
         self.to(device, dtype)
@@ -721,7 +714,7 @@ class ToolkitNetworkMixin:
 
     def get_all_modules(self: Network) -> List[Module]:
         if self.network_type.lower() == "adalora":
-            return [] # AdaLoRA bypasses this logic, PEFT models are managed differently
+            return []
         loras = []
         if hasattr(self, 'unet_loras'):
             loras += self.unet_loras
@@ -731,7 +724,6 @@ class ToolkitNetworkMixin:
 
     def _update_checkpointing(self: Network):
         if self.network_type.lower() == "adalora":
-            # PEFT models handle their own gradient checkpointing internally.
             return
         for module in self.get_all_modules():
             if self.is_checkpointing:

@@ -118,7 +118,7 @@ class LoRASpecialNetwork(ToolkitNetworkMixin, LoRANetwork):
     NUM_OF_BLOCKS = 12  # フルモデル相当でのup,downの層の数
 
     UNET_TARGET_REPLACE_MODULE = ["UNet2DConditionModel"]
-    UNET_TARGET_REPLACE_MODULE_CONV2D_3X3 = ["UNet2DConditionModel"]
+    UNET_TARGET_REPLACE_MODULE_CONV2D_3X3 = ["UNET2DConditionModel"]
     TEXT_ENCODER_TARGET_REPLACE_MODULE = ["CLIPAttention", "CLIPMLP"]
     LORA_PREFIX_UNET = "lora_unet"
     PEFT_PREFIX_UNET = "unet"
@@ -273,10 +273,18 @@ class LoRASpecialNetwork(ToolkitNetworkMixin, LoRANetwork):
             if self.network_config is None:
                 raise ValueError("NetworkConfig is required for AdaLoRA")
 
+            # Debug: Inspect UNet structure to find compatible target_modules
+            print("Debug: Inspecting UNet structure for target_modules")
+            linear_modules = []
+            for name, module in unet.named_modules():
+                if isinstance(module, torch.nn.Linear):
+                    linear_modules.append(name)
+            print(f"Found {len(linear_modules)} Linear modules in UNet: {linear_modules[:10]}...")  # Print first 10 for brevity
+
             adalora_config = AdaLoraConfig(
                 r=self.network_config.adalora_init_r,
                 lora_alpha=self.network_config.linear_alpha,
-                target_modules=None,
+                target_modules=["to_q", "to_k", "to_v", "to_out.0", "proj", "norm_out.linear"],  # Refined target_modules
                 lora_dropout=self.network_config.dropout if self.network_config.dropout is not None else 0.0,
                 tinit=self.network_config.adalora_tinit,
                 tfinal=self.network_config.adalora_tfinal,
@@ -313,7 +321,7 @@ class LoRASpecialNetwork(ToolkitNetworkMixin, LoRANetwork):
             if train_unet:
                 print(f"Adapting UNet with AdaLoRA...")
                 unet_adalora_config = copy.deepcopy(adalora_config)
-                unet_adalora_config.target_modules = ["to_q", "to_k", "to_v", "to_out.0", "proj"]
+                unet_adalora_config.target_modules = ["to_q", "to_k", "to_v", "to_out.0", "proj", "norm_out.linear"]  # Refined target_modules
                 unet_adapter_name = f"{self.peft_adapter_name}_unet"
                 unet_adalora_config.peft_type = "ADALORA"
                 self.peft_adapted_unet = get_peft_model(unet, unet_adalora_config, unet_adapter_name)
@@ -622,22 +630,40 @@ class LoRASpecialNetwork(ToolkitNetworkMixin, LoRANetwork):
                 unet_params = [p for p in self.peft_adapted_unet.parameters() if p.requires_grad]
                 if unet_params:
                     all_params.append({"lr": unet_lr, "params": unet_params, "weight_decay": 0.0})
+                # Debug: Check for parameters with requires_grad=True
+                print(f"UNet trainable parameters: {len(unet_params)}")
+                for name, param in self.peft_adapted_unet.named_parameters():
+                    if param.requires_grad:
+                        print(f"UNet trainable param: {name}, shape: {param.shape}")
             for i, te_model in enumerate(self.peft_adapted_text_encoders):
                 te_params = [p for p in te_model.parameters() if p.requires_grad]
                 if te_params:
                     all_params.append({"lr": text_encoder_lr, "params": te_params, "weight_decay": 0.0})
+                # Debug: Check for parameters with requires_grad=True
+                print(f"Text Encoder {i} trainable parameters: {len(te_params)}")
+                for name, param in te_model.named_parameters():
+                    if param.requires_grad:
+                        print(f"Text Encoder {i} trainable param: {name}, shape: {param.shape}")
             if self.full_train_in_out:
                 base_model = self.base_model_ref() if self.base_model_ref is not None else None
                 if self.is_pixart or self.is_auraflow or self.is_flux or self.is_lumina2 or (base_model is not None and base_model.arch == "wan21"):
                     if hasattr(self, 'transformer_pos_embed') and self.transformer_pos_embed is not None:
-                        all_params.append({"lr": unet_lr, "params": list(self.transformer_pos_embed.parameters())})
+                        pos_embed_params = list(self.transformer_pos_embed.parameters())
+                        all_params.append({"lr": unet_lr, "params": pos_embed_params})
+                        print(f"Transformer pos_embed trainable parameters: {len(pos_embed_params)}")
                     if hasattr(self, 'transformer_proj_out') and self.transformer_proj_out is not None:
-                        all_params.append({"lr": unet_lr, "params": list(self.transformer_proj_out.parameters())})
+                        proj_out_params = list(self.transformer_proj_out.parameters())
+                        all_params.append({"lr": unet_lr, "params": proj_out_params})
+                        print(f"Transformer proj_out trainable parameters: {len(proj_out_params)}")
                 else:
                     if hasattr(self, 'unet_conv_in') and self.unet_conv_in is not None:
-                        all_params.append({"lr": unet_lr, "params": list(self.unet_conv_in.parameters())})
+                        conv_in_params = list(self.unet_conv_in.parameters())
+                        all_params.append({"lr": unet_lr, "params": conv_in_params})
+                        print(f"UNet conv_in trainable parameters: {len(conv_in_params)}")
                     if hasattr(self, 'unet_conv_out') and self.unet_conv_out is not None:
-                        all_params.append({"lr": unet_lr, "params": list(self.unet_conv_out.parameters())})
+                        conv_out_params = list(self.unet_conv_out.parameters())
+                        all_params.append({"lr": unet_lr, "params": conv_out_params})
+                        print(f"UNet conv_out trainable parameters: {len(conv_out_params)}")
             return all_params
 
         all_params = super().prepare_optimizer_params(text_encoder_lr, unet_lr, default_lr)
@@ -662,7 +688,18 @@ class LoRASpecialNetwork(ToolkitNetworkMixin, LoRANetwork):
         if self.peft_adapted_unet and unet_adapter_name in self.peft_adapted_unet.peft_config:
             adalora_tuner_unet = self.peft_adapted_unet.base_model
             if isinstance(adalora_tuner_unet, peft.tuners.adalora.model.AdaLoraModel):
-                adalora_tuner_unet.update_and_allocate(step_num)
+                try:
+                    adalora_tuner_unet.update_and_allocate(step_num)
+                except TypeError as e:
+                    if "unsupported operand type(s) for *" in str(e):
+                        print(f"Warning: Skipping UNet update_and_allocate due to None gradients at step {step_num}: {e}")
+                        none_grad_params = [(name, param) for name, param in adalora_tuner_unet.named_parameters() if param.grad is None and param.requires_grad]
+                        for name, param in none_grad_params:
+                            print(f"Parameter with None gradient: {name}, shape: {param.shape}")
+                        if not none_grad_params:
+                            print("No parameters with None gradients found.")
+                    else:
+                        raise e
             else:
                 print(f"Error: UNet tuner (via .base_model) for adapter '{unet_adapter_name}' is not an AdaLoraModel instance but {type(adalora_tuner_unet)}. Cannot call update_and_allocate.")
         for i, te_model in enumerate(self.peft_adapted_text_encoders):
@@ -670,7 +707,18 @@ class LoRASpecialNetwork(ToolkitNetworkMixin, LoRANetwork):
             if te_adapter_name in te_model.peft_config:
                 adalora_tuner_te = te_model.base_model
                 if isinstance(adalora_tuner_te, peft.tuners.adalora.model.AdaLoraModel):
-                    adalora_tuner_te.update_and_allocate(step_num)
+                    try:
+                        adalora_tuner_te.update_and_allocate(step_num)
+                    except TypeError as e:
+                        if "unsupported operand type(s) for *" in str(e):
+                            print(f"Warning: Skipping Text Encoder {i} update_and_allocate due to None gradients at step {step_num}: {e}")
+                            none_grad_params = [(name, param) for name, param in adalora_tuner_te.named_parameters() if param.grad is None and param.requires_grad]
+                            for name, param in none_grad_params:
+                                print(f"Parameter with None gradient: {name}, shape: {param.shape}")
+                            if not none_grad_params:
+                                print("No parameters with None gradients found.")
+                        else:
+                            raise e
                 else:
                     print(f"Error: Text Encoder {i} tuner (via .base_model) for adapter '{te_adapter_name}' is not an AdaLoraModel instance but {type(adalora_tuner_te)}. Cannot call update_and_allocate.")
 
