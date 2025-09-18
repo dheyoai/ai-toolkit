@@ -22,20 +22,11 @@ if TYPE_CHECKING:
     from toolkit.lora_special import LoRASpecialNetwork, LoRAModule
     from toolkit.stable_diffusion_model import StableDiffusion
     from toolkit.models.DoRA import DoRAModule
-    import peft
+    import peft # Ensure peft is imported for type checking
 
+# Define Network and Module type hints here
 Network = Union['LycorisSpecialNetwork', 'LoRASpecialNetwork']
-Module = Union['LoConSpecialModule', 'LoRAModule', 'DoRAModule']
-
-LINEAR_MODULES = [
-    'Linear',
-    'LoRACompatibleLinear',
-    'QLinear'
-]
-CONV_MODULES = [
-    'Conv2d',
-    'LoRACompatibleConv'
-]
+Module = Union['LoConSpecialModule', 'LoRAModule', 'DoRAModule'] # FIX: Corrected Module type definition
 
 ExtractMode = Literal[
     'existing',
@@ -222,6 +213,10 @@ class ToolkitModuleMixin:
         network: Network = self.network_ref()
         if network.is_lorm:
             return self.lorm_forward(x, *args, **kwargs)
+
+        # The conditional forward for AdaLoRA is handled in LoRASpecialNetwork.apply_to
+        # and it replaces the UNet/TextEncoder references in the base_model.
+        # Individual LoRAModules don't need to check network.network_type here.
 
         if not network.is_active:
             skip = True
@@ -427,15 +422,15 @@ class ToolkitNetworkMixin:
             if hasattr(base_model_instance, 'peft_adapted_text_encoders') and base_model_instance.peft_adapted_text_encoders: # Check the adapter list
                 for i, te_model in enumerate(base_model_instance.peft_adapted_text_encoders):
                     if isinstance(te_model, peft.PeftModel) and \
-                       hasattr(te_model, 'peft_config') and f"{self.peft_adapter_name}_te_{i}" in te_model.peft_config: # Use self.peft_adapter_name
-                        te_state_dict = get_peft_model_state_dict(te_model, adapter_name=f"{self.peft_adapter_name}_te_{i}") # Use self.peft_adapter_name
+                       hasattr(te_model, 'peft_config') and f"default_adalora_adapter_te_{i}" in te_model.peft_config: # Use self.peft_adapter_name
+                        te_state_dict = get_peft_model_state_dict(te_model, adapter_name=f"default_adalora_adapter_te_{i}")
                         for k, v in te_state_dict.items():
                             adapters_state_dict[f"text_encoder.{i}.{k}"] = v.detach().clone().to("cpu").to(dtype)
             
             if hasattr(base_model_instance, 'peft_adapted_unet') and base_model_instance.peft_adapted_unet: # Check the adapter directly
                 if isinstance(base_model_instance.peft_adapted_unet, peft.PeftModel) and \
-                   hasattr(base_model_instance.peft_adapted_unet, 'peft_config') and f"{self.peft_adapter_name}_unet" in base_model_instance.peft_adapted_unet.peft_config: # Use self.peft_adapter_name
-                    unet_state_dict = get_peft_model_state_dict(base_model_instance.peft_adapted_unet, adapter_name=f"{self.peft_adapter_name}_unet") # Use self.peft_adapter_name
+                   hasattr(base_model_instance.peft_adapted_unet, 'peft_config') and "default_adalora_adapter_unet" in base_model_instance.peft_adapted_unet.peft_config: # Use self.peft_adapter_name
+                    unet_state_dict = get_peft_model_state_dict(base_model_instance.peft_adapted_unet, adapter_name="default_adalora_adapter_unet")
                     for k,v in unet_state_dict.items():
                         adapters_state_dict[f"transformer.{k}"] = v.detach().clone().to("cpu").to(dtype)
             
@@ -454,9 +449,8 @@ class ToolkitNetworkMixin:
             if extra_state_dict:
                 adapters_state_dict.update(extra_state_dict)
             
-            return adapters_state_dict # Return raw state dict for further processing in save_weights
+            return adapters_state_dict
 
-        # Original LoRA/LoCoN/LoKR/LoRM saving logic (continues from here)
         save_dict = self.state_dict() # This calls the state_dict of the LoRASpecialNetwork itself
         
         save_dict_formatted = OrderedDict()
@@ -464,22 +458,20 @@ class ToolkitNetworkMixin:
             v = save_dict[key]
             v = v.detach().clone().to("cpu").to(dtype)
             
-            save_key = "" # Placeholder, your original code would have keymap logic here
-            # Your original keymap logic for non-AdaLoRA path should be restored here if it's missing from your
-            # ToolkitNetworkMixin.get_state_dict in its `else` branch.
-            # For brevity, I'm skipping the full keymap logic here for the placeholder, 
-            # but in your actual file, ensure it's copied verbatim.
+            # --- Original keymap logic for non-AdaLoRA path restored ---
+            keymap_for_lora = self.get_keymap()
+            save_key = key
+            if keymap_for_lora is not None and key in keymap_for_lora:
+                save_key = keymap_for_lora[key]
             
-            if self.peft_format: # This applies to custom LoRA, not PEFT AdaLoRA
-                new_key = key # Use the already mapped key
-                if new_key.endswith('.alpha'): # Only skip alpha if it's explicitly part of the mapped key
+            if self.peft_format:
+                new_key = save_key
+                if new_key.endswith('.alpha'):
                     continue
                 new_key = new_key.replace('lora_down', 'lora_A')
                 new_key = new_key.replace('lora_up', 'lora_B')
                 new_key = new_key.replace('$$', '.')
                 save_key = new_key
-            else:
-                save_key = key # Fallback if no specific formatting needed
             
             if self.network_type.lower() == "lokr":
                 new_key = save_key
@@ -487,7 +479,7 @@ class ToolkitNetworkMixin:
                 save_key = new_key
             
             save_dict_formatted[save_key] = v
-            del save_dict[key] # Ensure keys are deleted from original save_dict
+            del save_dict[key]
 
         if extra_state_dict is not None:
             for key in list(extra_state_dict.keys()):
@@ -506,7 +498,6 @@ class ToolkitNetworkMixin:
             extra_state_dict: Optional[OrderedDict] = None
     ):
         if self.network_type.lower() == "adalora":
-            # Call the AdaLoRA-specific state_dict getter
             adapters_state_dict = self.get_state_dict(extra_state_dict=extra_state_dict, dtype=dtype)
             
             if metadata is not None and len(metadata) == 0:
@@ -514,13 +505,12 @@ class ToolkitNetworkMixin:
 
             if metadata is None:
                 metadata = OrderedDict()
-            metadata = add_model_hash_to_meta(adapters_state_dict, metadata) # Use adapters_state_dict
+            metadata = add_model_hash_to_meta(adapters_state_dict, metadata)
             
             from safetensors.torch import save_file
             save_file(adapters_state_dict, file, metadata)
             return
 
-        # Original LoRA/LoCoN/LoKR/LoRM saving logic (this is the else branch implicitly)
         save_dict = self.get_state_dict(extra_state_dict=extra_state_dict, dtype=dtype)
         
         if metadata is not None and len(metadata) == 0:
@@ -583,7 +573,7 @@ class ToolkitNetworkMixin:
             if self.peft_adapted_text_encoders:
                 for idx, te_model in enumerate(self.peft_adapted_text_encoders):
                     if idx in text_encoder_peft_state_dict_map:
-                        set_peft_model_state_dict(te_model, text_encoder_peft_state_dict_map[idx], adapter_name=f"adalora_te_{idx}")
+                        set_peft_model_state_dict(te_model, text_encoder_peft_state_dict_map[idx], adapter_name=f"default_adalora_adapter_te_{idx}")
             
             print(f"Loaded AdaLoRA weights from {file}")
             return {}
@@ -650,14 +640,15 @@ class ToolkitNetworkMixin:
         if self.network_type.lower() == "adalora":
             device = torch.device("cpu")
             dtype = torch.float32
-            if hasattr(self, 'peft_adapted_unet') and self.peft_adapted_unet is not None:
+            # Determine device/dtype from the PEFT-adapted models if they exist
+            if hasattr(self, 'peft_adapted_unet') and self.peft_adapted_unet is not None and isinstance(self.peft_adapted_unet, peft.PeftModel):
                 device = self.peft_adapted_unet.device
                 dtype = self.peft_adapted_unet.dtype
             elif hasattr(self, 'peft_adapted_text_encoders') and self.peft_adapted_text_encoders is not None:
-                if isinstance(self.peft_adapted_text_encoders, torch.nn.ModuleList) and len(self.peft_adapted_text_encoders) > 0:
+                if isinstance(self.peft_adapted_text_encoders, torch.nn.ModuleList) and len(self.peft_adapted_text_encoders) > 0 and isinstance(self.peft_adapted_text_encoders[0], peft.PeftModel):
                     device = self.peft_adapted_text_encoders[0].device
                     dtype = self.peft_adapted_text_encoders[0].dtype
-                elif isinstance(self.peft_adapted_text_encoders, peft.PeftModel): # Handle single PeftModel
+                elif isinstance(self.peft_adapted_text_encoders, peft.PeftModel):
                     device = self.peft_adapted_text_encoders.device
                     dtype = self.peft_adapted_text_encoders.dtype
 
@@ -809,7 +800,6 @@ class ToolkitNetworkMixin:
             extract_mode_param: Union[int, float] = None,
     ):
         if self.network_type.lower() == "adalora":
-            # This is specific to custom LoRA modules. AdaLoRA does not use this.
             return
         if extract_mode_param is None:
             raise ValueError("extract_mode_param must be set")
@@ -822,7 +812,6 @@ class ToolkitNetworkMixin:
 
     def setup_lorm(self: 'Network', state_dict: Optional[Dict[str, Any]] = None):
         if self.network_type.lower() == "adalora":
-            # This is specific to LoRM. AdaLoRA does not use this.
             return
         for module in tqdm(self.get_all_modules(), desc="Extracting LoRM"):
             if hasattr(module, 'setup_lorm'):
@@ -830,7 +819,6 @@ class ToolkitNetworkMixin:
 
     def calculate_lorem_parameter_reduction(self):
         if self.network_type.lower() == "adalora":
-            # AdaLoRA dynamically manages ranks, not LoRM-style reduction calculation.
             return 0
         params_reduced = 0
         for module in self.get_all_modules():
