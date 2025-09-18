@@ -1,16 +1,16 @@
 job: extension
 config:
-  name: ab_adalora_mod 
+  name: ab_adalora_lenient
   process:
   - type: sd_trainer
     training_folder: /dheyo/varunika/output
-    log_dir: /dheyo/varunika/output/ab_adalora_mod/tensorboard 
+    log_dir: /dheyo/varunika/output/ab_adalora_lenient/tensorboard
     device: cuda
     trigger_word: null
     performance_log_every: 10
     network:
-      type: adalora 
-      linear: 32 
+      type: adalora
+      linear: 32
       linear_alpha: 32
       conv: 16
       conv_alpha: 16
@@ -18,24 +18,24 @@ config:
       lokr_factor: -1
       network_kwargs:
         ignore_if_contains: []
-      adalora_init_r: 32           
-      adalora_target_r: 24          
-      adalora_tinit: 500           
-      adalora_tfinal: 1000         
-      adalora_deltaT: 100          
-      adalora_beta1: 0.85          
-      adalora_beta2: 0.85          
-      adalora_orth_reg_weight: 0.5 
+      adalora_init_r: 48
+      adalora_target_r: 32  
+      adalora_tinit: 750    
+      adalora_tfinal: 1500  
+      adalora_deltaT: 200   
+      adalora_beta1: 0.85
+      adalora_beta2: 0.85
+      adalora_orth_reg_weight: 0.3  
       adalora_total_step: 5000
     save:
       dtype: bf16
       save_every: 1000
-      start_saving_after: 2000 
+      start_saving_after: 2000
       max_step_saves_to_keep: 4
       save_format: diffusers
       push_to_hub: false
     datasets:
-    - folder_path: /home/varunika/ai-toolkit/datasets/alia_bhatt 
+    - folder_path: /home/varunika/ai-toolkit/datasets/alia_bhatt
       control_path: null
       mask_path: null
       mask_min_value: 0.1
@@ -71,7 +71,7 @@ config:
         weight_decay: 0.0001
       enable_ti: true
       enable_ttb: false
-      early_stopping_num_epochs: 20 
+      early_stopping_num_epochs: 20
       unload_text_encoder: false
       cache_text_embeddings: false
       lr: 0.0001
@@ -99,8 +99,7 @@ config:
       width: 1664
       height: 928
       samples:
-      - prompt: A close-up shot of (([AB] woman)) in a rugged leather jacket, standing
-          against a graffiti wall.
+      - prompt: A close-up shot of (([AB] woman)) in a rugged leather jacket, standing against a graffiti wall.
       - prompt: A medium-length portrait of (([AB] woman)) in a garden.
       - prompt: A full length shot of (([AB] woman)) wearing a white shirt, looking furious.
       neg: ''
@@ -111,5 +110,5 @@ config:
       num_frames: 1
       fps: 1
 meta:
-  name: ab_adalora_mod 
+  name: ab_adalora_lenient
   version: '1.0'

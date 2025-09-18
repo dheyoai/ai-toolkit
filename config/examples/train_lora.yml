@@ -3,8 +3,8 @@ config:
   name: ab_qwenimage
   process:
   - type: sd_trainer
-    training_folder: /home/varunika/ai-toolkit/output
-    log_dir: /home/varunika/ai-toolkit/output/ab_qwenimage/tensorboard
+    training_folder: /dheyo/varunika/output
+    log_dir: /dheyo/varunika/output/ab_qwenimage/tensorboard
     device: cuda
     trigger_word: null
     performance_log_every: 10
