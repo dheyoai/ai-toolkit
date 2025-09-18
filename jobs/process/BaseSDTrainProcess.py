@@ -1905,8 +1905,8 @@ class BaseSDTrainProcess(BaseTrainProcess):
                 self.network.apply_to(
                     text_encoder,
                     unet,
-                    self.train_config.train_text_encoder,
-                    self.train_config.train_unet
+                    train_text_encoder=self.train_config.train_text_encoder, # Pass as keyword argument
+                    train_unet=self.train_config.train_unet 
                 )
 
                 # we cannot merge in if quantized
@@ -2322,29 +2322,18 @@ class BaseSDTrainProcess(BaseTrainProcess):
                     loss_dict = self.hook_train_loop(batch_list)
                     epoch_loss_dict["epoch_loss"] += loss_dict["loss"]
                     print(f"\n\nEpoch loss dict is updated with mini batch/bucket loss: {epoch_loss_dict['epoch_loss']}\n\n")
-                    # if loss_dict.get("epoch_loss"):
-                    #     loss_dict["epoch_loss"] += loss_dict["loss"]
-                    # else:
-                    #     loss_dict["epoch_loss"] = 0.0
                 except Exception as e:
                     traceback.print_exc()
-                    #print batch info
                     print("Batch Items:")
                     for batch in batch_list:
                         for item in batch.file_items:
                             print(f" - {item.path}")
-                    raise e
-            if self.torch_profiler is not None:
-                torch.cuda.synchronize()  # Make sure all CUDA ops are done
-                self.torch_profiler.stop()
-                
-                print("\n==== Profile Results ====")
-                print(self.torch_profiler.key_averages().table(sort_by="cpu_time_total", row_limit=1000))
-            
+                    raise e 
             if self.network is not None and self.network.network_type.lower() == "adalora":
-                self.network.update_and_allocate_adalora(self.step_num) 
-                
                 adalora_config = self.network.network_config
+                if adalora_config.adalora_tinit <= self.step_num <= adalora_config.adalora_tfinal:
+                    self.network.update_and_allocate_adalora(self.step_num)
+                
                 is_adalora_rank_log_step = (
                     adalora_config.adalora_deltaT > 0 and (self.step_num % adalora_config.adalora_deltaT == 0)
                 ) or (self.step_num == adalora_config.adalora_tinit) # Log at tinit start as well

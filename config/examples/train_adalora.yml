@@ -26,6 +26,7 @@ config:
       adalora_beta1: 0.85          
       adalora_beta2: 0.85          
       adalora_orth_reg_weight: 0.5 
+      adalora_total_step: 5000
     save:
       dtype: bf16
       save_every: 1000
