@@ -27,6 +27,47 @@ config:
       adalora_beta2: 0.85          
       adalora_orth_reg_weight: 0.5 
       adalora_total_step: 5000
+    # # Aggressive settings
+    # network:
+    #   type: adalora
+    #   linear: 32
+    #   linear_alpha: 32
+    #   conv: 16
+    #   conv_alpha: 16
+    #   lokr_full_rank: true
+    #   lokr_factor: -1
+    #   network_kwargs:
+    #     ignore_if_contains: []
+    #   adalora_init_r: 32
+    #   adalora_target_r: 8 
+    #   adalora_tinit: 300    
+    #   adalora_tfinal: 750   
+    #   adalora_deltaT: 50    
+    #   adalora_beta1: 0.8    
+    #   adalora_beta2: 0.8    
+    #   adalora_orth_reg_weight: 0.7  
+    #   adalora_total_step: 5000
+
+    # # Lenient settings
+    # network:
+    #   type: adalora
+    #   linear: 32
+    #   linear_alpha: 32
+    #   conv: 16
+    #   conv_alpha: 16
+    #   lokr_full_rank: true
+    #   lokr_factor: -1
+    #   network_kwargs:
+    #     ignore_if_contains: []
+    #   adalora_init_r: 48
+    #   adalora_target_r: 32  
+    #   adalora_tinit: 750    
+    #   adalora_tfinal: 1500  
+    #   adalora_deltaT: 200   
+    #   adalora_beta1: 0.85
+    #   adalora_beta2: 0.85
+    #   adalora_orth_reg_weight: 0.3  
+    #   adalora_total_step: 5000
     save:
       dtype: bf16
       save_every: 1000
