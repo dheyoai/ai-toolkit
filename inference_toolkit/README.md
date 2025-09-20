@@ -106,3 +106,43 @@ Choose one of the following prompt options:
 | `--cleanup_local` | Delete local files after generation |
 | `--cleanup_cache` | Delete model cache after job completion |
 
+## Redis Job Processing
+
+The toolkit supports Redis-based job processing for distributed workflows with S3 upload.
+
+### Prerequisites
+
+1. **Set AWS environment variables**:
+   ```bash
+   export AWS_ACCESS_KEY_ID=your_access_key
+   export AWS_SECRET_ACCESS_KEY=your_secret_key
+   export AWS_DEFAULT_REGION=us-west-1
+   export S3_BUCKET_NAME=dheyo-generations
+   ```
+
+### Running Redis Tests
+
+#### Step 1: Submit Job Request
+```bash
+cd tests
+python3 producer.py
+```
+
+#### Step 2: Start Job Process
+```bash
+cd tests
+HIP_VISIBLE_DEVICES=2 python3 consumer.py
+```
+
+### S3 Upload Structure
+
+Generated images are uploaded to S3 with this structure:
+```
+s3://dheyo-generations/
+└── images/
+    └── user_{job_name}/
+        └── {generation_id}/
+            ├── output_{uuid1}.png
+            └── output_{uuid2}.png
+```
+
