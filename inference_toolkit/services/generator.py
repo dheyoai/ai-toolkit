@@ -1,5 +1,6 @@
 import time
 import traceback
+import uuid
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import List, Dict, Any
@@ -69,7 +70,9 @@ class BaseGenerator(ABC):
 
                     for img_idx, image in enumerate(images):
                         try:
-                            filename = f"prompt_{prompt_idx:03d}_img_{img_idx:02d}_{timestamp}.png"
+                            image_uuid = str(uuid.uuid4())
+                            file_extension = ".png"  # or get from config
+                            filename = f"output_{image_uuid}{file_extension}"
                             filepath = output_dir / filename
                             
                             if hasattr(image, 'save'):

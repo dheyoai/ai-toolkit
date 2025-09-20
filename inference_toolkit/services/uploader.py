@@ -163,15 +163,8 @@ class S3Uploader:
             }
     
     def _generate_s3_key(self, file_path: Path, user_id: str, generation_id: str) -> str:
-        file_extension = file_path.suffix.lower()
-        if not file_extension:
-            file_extension = '.jpg'
-        
-        output_uuid = str(uuid.uuid4())
-        output_filename = f"output_{output_uuid}{file_extension}"
-
-        s3_key = f"images/{user_id}/{generation_id}/{output_filename}"
-        
+        filename = file_path.name
+        s3_key = f"images/{user_id}/{generation_id}/{filename}"
         return s3_key
     
     def _get_content_type(self, file_path: Path) -> str:

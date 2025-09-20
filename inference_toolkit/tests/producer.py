@@ -7,7 +7,7 @@ def create_request():
         "job_name": "allu_arjun_alia_test",
         "model_type": "qwen",
         "model_path": "Qwen/Qwen-Image",
-        "cache_dir": "/dheyo/lora-infer",
+        "cache_dir": "./cache",
         "hf_lora_id": "DheyoAI/allu_arjun_and_alia_bhatt_1",
         "instruction": "A close-up portrait of (([A] man)) and (([AB] woman)) sitting together in a cozy cafe, warm ambient lighting, soft bokeh background, both facing the camera with gentle smiles",
         "num_images_per_prompt": 2,
