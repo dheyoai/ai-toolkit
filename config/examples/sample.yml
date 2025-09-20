@@ -1,10 +1,10 @@
 job: extension
 config:
-  name: lora_ab_base
+  name: aa_and_dp_qwenimage_2
   process:
   - type: sd_trainer
-    training_folder: /dheyo/varunika/output
-    log_dir: /dheyo/varunika/output/lora_ab_base/tensorboard
+    training_folder: /root/shivanvitha/dev/ai-toolkit/output
+    log_dir: /root/shivanvitha/dev/ai-toolkit/output/aa_and_dp_qwenimage_2/tensorboard
     device: cuda
     trigger_word: null
     performance_log_every: 10
@@ -21,17 +21,37 @@ config:
     save:
       dtype: bf16
       save_every: 250
-      start_saving_after: 1000 ## steps
+      start_saving_after: 1000
       max_step_saves_to_keep: 4
       save_format: diffusers
       push_to_hub: false
     datasets:
-    - folder_path: /home/varunika/ai-toolkit/datasets/alia_bhatt
+    - folder_path: /root/shivanvitha/ai-toolkit/datasets/dp_aa22
       control_path: null
       mask_path: null
       mask_min_value: 0.1
-      trigger_token: '[AB]'
-      initializer_concept: A 34 year old Indian woman, 5 feet 1 inch tall, fair skin, slim build, slim jawline, dimples on cheeks
+      trigger_token: '[DP]'
+      initializer_concept: A 35 year old Indian woman, 5 feet 9 inches tall, dusky skin tone, sharp nose, sharp jawline, big eyes, slim build
+      default_caption: ''
+      caption_ext: txt
+      caption_dropout_rate: 0
+      cache_latents_to_disk: false
+      is_reg: false
+      network_weight: 1
+      resolution:
+      - 512
+      - 768
+      - 1024
+      controls: []
+      shrink_video_to_frames: true
+      num_frames: 1
+      do_i2v: true
+    - folder_path: /root/shivanvitha/ai-toolkit/datasets/allu_aa22
+      control_path: null
+      mask_path: null
+      mask_min_value: 0.1
+      trigger_token: '[AA]'
+      initializer_concept: A 39 year old Indian man, 5 feet 9 inches tall, sharp facial features, dusky skin tone, beard and mustache, strong build
       default_caption: ''
       caption_ext: txt
       caption_dropout_rate: 0
@@ -62,7 +82,7 @@ config:
         weight_decay: 0.0001
       enable_ti: true
       enable_ttb: false
-      early_stopping_num_epochs: 60 ## epochs
+      early_stopping_num_epochs: 60
       unload_text_encoder: false
       cache_text_embeddings: false
       lr: 0.0001
@@ -90,10 +110,9 @@ config:
       width: 1664
       height: 928
       samples:
-      - prompt: A close-up shot of (([AB] woman)) in a rugged leather jacket, standing
-          against a graffiti wall.
-      - prompt: A medium-length portrait of (([AB] woman)) in a garden.
-      - prompt: A full length shot of (([AB] woman)) wearing a white shirt, looking furious.
+      - prompt: A photo of (([DP] woman)) walking in the front with (([AA] man)) carrying shopping backs behind her.
+      - prompt: A medium-length portrait of (([DP] woman)) and (([AA] man)) looking at the camera, terrified and worried, both wearing silver suits.
+      - prompt: A full length shot of (([AA] man)) and (([DP] woman)) in traditional Indian clothes in front of a clothing store in New York
       neg: ''
       seed: 42
       walk_seed: true
@@ -102,5 +121,5 @@ config:
       num_frames: 1
       fps: 1
 meta:
-  name: lora_ab_base
+  name: aa_and_dp_qwenimage_2
   version: '1.0'

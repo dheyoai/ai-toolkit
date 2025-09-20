@@ -1,15 +1,16 @@
 job: extension
 config:
-  name: lora_ab_base
+  name: adalora_ab_aggressive
   process:
   - type: sd_trainer
     training_folder: /dheyo/varunika/output
-    log_dir: /dheyo/varunika/output/lora_ab_base/tensorboard
+    log_dir: /dheyo/varunika/output/adalora_ab_aggressive/tensorboard 
     device: cuda
     trigger_word: null
     performance_log_every: 10
+    # # Aggressive settings
     network:
-      type: lora
+      type: adalora
       linear: 32
       linear_alpha: 32
       conv: 16
@@ -18,15 +19,45 @@ config:
       lokr_factor: -1
       network_kwargs:
         ignore_if_contains: []
+      adalora_init_r: 32
+      adalora_target_r: 8 
+      adalora_tinit: 300    
+      adalora_tfinal: 750   
+      adalora_deltaT: 50    
+      adalora_beta1: 0.8    
+      adalora_beta2: 0.8    
+      adalora_orth_reg_weight: 0.7  
+      adalora_total_step: 7000
+
+    # # Lenient settings
+    # network:
+    #   type: adalora
+    #   linear: 32
+    #   linear_alpha: 32
+    #   conv: 16
+    #   conv_alpha: 16
+    #   lokr_full_rank: true
+    #   lokr_factor: -1
+    #   network_kwargs:
+    #     ignore_if_contains: []
+    #   adalora_init_r: 48
+    #   adalora_target_r: 32  
+    #   adalora_tinit: 750    
+    #   adalora_tfinal: 1500  
+    #   adalora_deltaT: 200   
+    #   adalora_beta1: 0.85
+    #   adalora_beta2: 0.85
+    #   adalora_orth_reg_weight: 0.3  
+    #   adalora_total_step: 7000
     save:
       dtype: bf16
-      save_every: 250
-      start_saving_after: 1000 ## steps
+      save_every: 1000
+      start_saving_after: 2000 
       max_step_saves_to_keep: 4
       save_format: diffusers
       push_to_hub: false
     datasets:
-    - folder_path: /home/varunika/ai-toolkit/datasets/alia_bhatt
+    - folder_path: /home/varunika/ai-toolkit/datasets/alia_bhatt 
       control_path: null
       mask_path: null
       mask_min_value: 0.1
@@ -62,7 +93,7 @@ config:
         weight_decay: 0.0001
       enable_ti: true
       enable_ttb: false
-      early_stopping_num_epochs: 60 ## epochs
+      early_stopping_num_epochs: 60 
       unload_text_encoder: false
       cache_text_embeddings: false
       lr: 0.0001
@@ -102,5 +133,5 @@ config:
       num_frames: 1
       fps: 1
 meta:
-  name: lora_ab_base
+  name: adalora_ab_aggressive
   version: '1.0'

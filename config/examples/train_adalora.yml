@@ -1,10 +1,10 @@
 job: extension
 config:
-  name: ab_adalora_mod 
+  name: adalora_ab_moderate 
   process:
   - type: sd_trainer
     training_folder: /dheyo/varunika/output
-    log_dir: /dheyo/varunika/output/ab_adalora_mod/tensorboard 
+    log_dir: /dheyo/varunika/output/adalora_ab_moderate/tensorboard 
     device: cuda
     trigger_word: null
     performance_log_every: 10
@@ -26,7 +26,7 @@ config:
       adalora_beta1: 0.85          
       adalora_beta2: 0.85          
       adalora_orth_reg_weight: 0.5 
-      adalora_total_step: 5000
+      adalora_total_step: 7000
     # # Aggressive settings
     # network:
     #   type: adalora
@@ -70,8 +70,8 @@ config:
     #   adalora_total_step: 5000
     save:
       dtype: bf16
-      save_every: 1000
-      start_saving_after: 2000 
+      save_every: 250
+      start_saving_after: 1000 
       max_step_saves_to_keep: 4
       save_format: diffusers
       push_to_hub: false
@@ -99,7 +99,7 @@ config:
     train:
       batch_size: 2
       bypass_guidance_embedding: false
-      steps: 5000
+      steps: 7000
       gradient_accumulation: 1
       train_unet: true
       train_text_encoder: false
@@ -112,7 +112,7 @@ config:
         weight_decay: 0.0001
       enable_ti: true
       enable_ttb: false
-      early_stopping_num_epochs: 20 
+      early_stopping_num_epochs: 60 
       unload_text_encoder: false
       cache_text_embeddings: false
       lr: 0.0001
@@ -152,5 +152,5 @@ config:
       num_frames: 1
       fps: 1
 meta:
-  name: ab_adalora_mod 
+  name: adalora_ab_moderate 
   version: '1.0'
