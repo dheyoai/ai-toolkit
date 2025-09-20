@@ -50,7 +50,7 @@ class JobOrchestrator:
         self.error_traceback = None
         
         try:
-            self.downloader = Downloader()
+            self.downloader = Downloader(args.cache_dir)
             logger.info("Downloader initialized successfully")
         except Exception as e:
             raise JobError(f"Failed to initialize downloader: {str(e)}", "initialization")

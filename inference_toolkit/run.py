@@ -38,6 +38,7 @@ def parse_args() -> argparse.Namespace:
                        default="(((deformed))), blurry, over saturation, bad anatomy, disfigured, poorly drawn face, mutation, mutated, (extra_limb), (ugly), (poorly drawn hands), fused fingers, messy drawing, broken legs censor, censored, censor_bar, watermark")
     
     parser.add_argument("--output_dir", type=str, default="./outputs")
+    parser.add_argument("--cache_dir", type=str, default="/dheyo/lora-infer", help="Cache directory for models and LoRA")
     
     parser.add_argument("--cleanup_local", action="store_true", help="Cleanup local files after generation")
     parser.add_argument("--cleanup_cache", action="store_true", help="Cleanup model cache")

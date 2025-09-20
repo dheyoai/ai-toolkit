@@ -14,7 +14,7 @@ class DownloadError(Exception):
 
 class Downloader:
     
-    def __init__(self, cache_dir: str = "./cache"):
+    def __init__(self, cache_dir: str = "/dheyo/lora-infer"):
         self.cache_dir = Path(cache_dir)
         try:
             self.cache_dir.mkdir(parents=True, exist_ok=True)

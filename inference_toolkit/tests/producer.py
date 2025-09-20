@@ -1,29 +1,27 @@
-#!/usr/bin/env python3
-"""
-Producer: Create request -> Push to queue -> Wait for response -> Print result
-"""
-
 import json
 import time
 import redis
-
 
 def create_request():
     return {
         "job_name": "allu_arjun_alia_test",
         "model_type": "qwen",
         "model_path": "Qwen/Qwen-Image",
+        "cache_dir": "/dheyo/lora-infer",
         "hf_lora_id": "DheyoAI/allu_arjun_and_alia_bhatt_1",
-        "instruction": "A close-up portrait of two actors sitting together in a cozy cafe, warm ambient lighting, soft bokeh background, both facing the camera with gentle smiles",
-        "num_inference_steps": 50,
-        "aspect_ratio": "16:9",
+        "instruction": "A close-up portrait of (([A] man)) and (([AB] woman)) sitting together in a cozy cafe, warm ambient lighting, soft bokeh background, both facing the camera with gentle smiles",
         "num_images_per_prompt": 2,
+        "num_inference_steps": 50,
         "true_cfg_scale": 4.0,
+        "aspect_ratio": "16:9",
         "seed": 42,
         "dtype": "bf16",
-        "output_dir": "./outputs"
+        "negative_prompt": "(((deformed))), blurry, over saturation, bad anatomy, disfigured, poorly drawn face, mutation, mutated, (extra_limb), (ugly), (poorly drawn hands), fused fingers, messy drawing, broken legs censor, censored, censor_bar, watermark",
+        "output_dir": "./outputs",
+        "cleanup_local": False,
+        "cleanup_cache": False,
+        "local_lora_config": False
     }
-
 
 def push_request():
     redis_client = redis.Redis(decode_responses=True)
