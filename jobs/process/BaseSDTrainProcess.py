@@ -434,7 +434,7 @@ class BaseSDTrainProcess(BaseTrainProcess):
         # pt_files = [f for f in items if f.endswith('.pt')]
         # directories = [d for d in items if os.path.isdir(d) and not d.endswith('.safetensors')]
         embed_files = []
-        tokenizer_dirs = glob.glob(os.path.join(self.save_root, "tokenizer_*"))
+        # tokenizer_dirs = glob.glob(os.path.join(self.save_root, "tokenizer_*"))
         text_encoder_dirs = glob.glob(os.path.join(self.save_root, "text_encoder_*"))
 
         # critic_items = []
@@ -443,7 +443,7 @@ class BaseSDTrainProcess(BaseTrainProcess):
         if self.embed_config is not None:
             embed_pattern =  self.embed_config[0].trigger[:-1]
             embed_pattern = f"{embed_pattern}*"
-            print(embed_pattern)
+            # print(embed_pattern)
             embed_items = glob.glob(os.path.join(self.save_root, embed_pattern))
             embed_files = [f for f in embed_items if f.endswith('.safetensors') or f.endswith('.pt')]
 
@@ -453,7 +453,7 @@ class BaseSDTrainProcess(BaseTrainProcess):
 
         # Combine all items
         # combined_items = safetensors_files + pt_files + directories + embed_files + critic_items
-        combined_items = safetensors_files + embed_files + text_encoder_dirs + tokenizer_dirs
+        combined_items = safetensors_files + embed_files + text_encoder_dirs 
 
         # Filter items to remove (those not matching best steps)
         items_to_remove, steps_to_remove = [], []
@@ -609,17 +609,18 @@ class BaseSDTrainProcess(BaseTrainProcess):
 
         # self.sd.tokenizer.save_pretrained(os.path.join(self.save_root, f'tokenizer_{self.job.name}_{step_num}'))
         if self.embedding is not None:
-            if isinstance(self.sd.tokenizer, List):
-                for idx, tokenizer in enumerate(self.sd.tokenizer):
-                    tokenizer.save_pretrained(os.path.join(self.save_root, f'tokenizer_{idx}_{self.job.name}_{step_num}'))
-            else:
-                self.sd.tokenizer.save_pretrained(os.path.join(self.save_root, f'tokenizer_{self.job.name}_{step_num}'))
+            if not any(d.startswith("tokenizer") for d in os.listdir(self.save_root) if os.path.isdir(os.path.join(self.save_root, d))):
+                if isinstance(self.sd.tokenizer, List):
+                    for idx, tokenizer in enumerate(self.sd.tokenizer):
+                        tokenizer.save_pretrained(os.path.join(self.save_root, f'tokenizer_{idx}_{self.job.name}'))
+                else:
+                    self.sd.tokenizer.save_pretrained(os.path.join(self.save_root, f'tokenizer_{self.job.name}'))
 
-            if isinstance(self.sd.text_encoder, List):
-                for idx, text_encoder in enumerate(self.sd.text_encoder):
-                    text_encoder.save_pretrained(os.path.join(self.save_root, f'text_encoder_{idx}_{self.job.name}_{step_num}'))
-            else:
-                self.sd.text_encoder.save_pretrained(os.path.join(self.save_root, f'text_encoder_{self.job.name}_{step_num}'))
+            # if isinstance(self.sd.text_encoder, List):
+            #     for idx, text_encoder in enumerate(self.sd.text_encoder):
+            #         text_encoder.save_pretrained(os.path.join(self.save_root, f'text_encoder_{idx}_{self.job.name}_{step_num}'))
+            # else:
+            #     self.sd.text_encoder.save_pretrained(os.path.join(self.save_root, f'text_encoder_{self.job.name}_{step_num}'))
 
 
         self.update_training_metadata()
