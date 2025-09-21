@@ -33,7 +33,7 @@ global accelerator, pipeline, aspect_ratio
 CUDA_VISIBLE_DEVICES=0 python3 -u gradio_qwen_image_aa_and_ab.py --model_path "Qwen/Qwen-Image" \
 --transformer_lora_path /data/shivanvitha/dheyo_ai_toolkit/ai-toolkit/output/hub/models--shivmlops21--allu_arjun_and_alia_bhatt_1/snapshots/e3f588e48a4c67dff8dd173f5fb0343e86ddd405/aa_and_ab_qwen_image_1_LoRA_000007200.safetensors \
 --tokenizer_path /data/shivanvitha/dheyo_ai_toolkit/ai-toolkit/output/hub/models--shivmlops21--allu_arjun_and_alia_bhatt_1/snapshots/e3f588e48a4c67dff8dd173f5fb0343e86ddd405/tokenizer_0_aa_and_ab_qwen_image_1__000007200 \
---text_encoder_path /data/shivanvitha/dheyo_ai_toolkit/ai-toolkit/output/hub/models--shivmlops21--allu_arjun_and_alia_bhatt_1/snapshots/e3f588e48a4c67dff8dd173f5fb0343e86ddd405/text_encoder_0_aa_and_ab_qwen_image_1__000007200 \
+--embeddings_path /data/shivanvitha/dheyo_ai_toolkit/ai-toolkit/output/hub/models--shivmlops21--allu_arjun_and_alia_bhatt_1/snapshots/e3f588e48a4c67dff8dd173f5fb0343e86ddd405/text_encoder_0_aa_and_ab_qwen_image_1__000007200 \
 --token_abstraction_json_path tokens.json \
 --instructions_path /data/shivanvitha/dheyo_ai_toolkit/ai-toolkit/gradio_app_instructions/aa_and_ab.md \
 --port 8900
@@ -45,7 +45,7 @@ CUDA_VISIBLE_DEVICES=0 python3 -u gradio_qwen_image_aa_and_ab.py --model_path "Q
 CUDA_VISIBLE_DEVICES=0 python3 gradio_qwen_image_aa_and_ab.py --model_path "Qwen/Qwen-Image" \
 --transformer_lora_path /data/shivanvitha/dheyo_ai_toolkit/ai-toolkit/output/hub/models--shivmlops21--allu_arjun_and_alia_bhatt_3/snapshots/203d95a4cfcf0a0e6447460731541ec2777d67cb/aa_and_ab_qwen_image_3_LoRA.safetensors \
 --tokenizer_path /data/shivanvitha/dheyo_ai_toolkit/ai-toolkit/output/hub/models--shivmlops21--allu_arjun_and_alia_bhatt_3/snapshots/203d95a4cfcf0a0e6447460731541ec2777d67cb/tokenizer_0_aa_and_ab_qwen_image_3_ \
---text_encoder_path /data/shivanvitha/dheyo_ai_toolkit/ai-toolkit/output/hub/models--shivmlops21--allu_arjun_and_alia_bhatt_3/snapshots/203d95a4cfcf0a0e6447460731541ec2777d67cb/text_encoder_0_aa_and_ab_qwen_image_3_ \
+--embeddings_path /data/shivanvitha/dheyo_ai_toolkit/ai-toolkit/output/hub/models--shivmlops21--allu_arjun_and_alia_bhatt_3/snapshots/203d95a4cfcf0a0e6447460731541ec2777d67cb/text_encoder_0_aa_and_ab_qwen_image_3_ \
 --token_abstraction_json_path tokens_3.json \
 --instructions_path /data/shivanvitha/dheyo_ai_toolkit/ai-toolkit/gradio_app_instructions/aa_and_ab.md \
 --port 8900
@@ -57,7 +57,7 @@ CUDA_VISIBLE_DEVICES=0 python3 gradio_qwen_image_aa_and_ab.py --model_path "Qwen
 CUDA_VISIBLE_DEVICES=0 python3 gradio_qwen_image_aa_and_ab.py --model_path "Qwen/Qwen-Image" \
 --transformer_lora_path /data/shivanvitha/dheyo_ai_toolkit/ai-toolkit/output/robert_downey_jr_ai/rdj_ai_LoRA.safetensors \
 --tokenizer_path /data/shivanvitha/dheyo_ai_toolkit/ai-toolkit/output/robert_downey_jr_ai/tokenizer_0_rdj_ai_ \
---text_encoder_path /data/shivanvitha/dheyo_ai_toolkit/ai-toolkit/output/robert_downey_jr_ai/text_encoder_0_rdj_ai_ \
+--embeddings_path /data/shivanvitha/dheyo_ai_toolkit/ai-toolkit/output/robert_downey_jr_ai/text_encoder_0_rdj_ai_ \
 --token_abstraction_json_path /data/shivanvitha/dheyo_ai_toolkit/ai-toolkit/output/robert_downey_jr_ai/tokens.json \
 --instructions_path /data/shivanvitha/dheyo_ai_toolkit/ai-toolkit/gradio_app_instructions/rdj.md \
 --port 7878 
@@ -76,14 +76,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--tokenizer_path", 
         type=str,
-        required=True,
+        default=None,
         help="Path to updated tokenizer.",
     )
     parser.add_argument(
-        "--text_encoder_path", 
+        "--embeddings_path", 
         type=str,
-        required=True,
-        help="Path to text encoder checkpoint.",
+        default=None,
+        help="Path to embeddings file.",
     )
     parser.add_argument(
         "--token_abstraction_json_path",
@@ -135,17 +135,14 @@ with open(args.instructions_path, 'r') as md_file:
     einstructions = md_file.read()
 
 
-# lora_weights_path = "data/shivanvitha/dheyo_ai_toolkit/ai-toolkit/output/aa_and_ab_qwen_image_1"
-
-def convert_lora_weights_before_load(state_dict, new_path):
-    popped_key = state_dict.pop("emb_params")
+def convert_lora_weights_before_load(args: argparse.Namespace, state_dict, new_path):
+    if args.token_abstraction_json_path:
+        popped_key = state_dict.pop("emb_params")
     new_sd = {}
     for key, value in state_dict.items():
         new_key = key.replace("diffusion_model.", "transformer.")
         new_sd[new_key] = value
 
-    # dir_path = '/'.join(args.transformer_lora_path.split('/')[:-1]) 
-    # cleaned_safetensors_file = args.transformer_lora_path.split('/')[-1].replace(".safetensors", "_cleaned.safetensors")
     save_file(new_sd, f"{new_path}")
     return new_sd
 
@@ -156,36 +153,52 @@ def load_pipeline(
     args, accelerator: Accelerator, weight_dtype: torch.dtype
 ) -> QwenImagePipeline:
     # Load the pipeline
-    torch_dtype = torch.bfloat16 if args.dtype == "bf16" else torch.float32
+    if torch.cuda.is_available():
+        torch_dtype = torch.bfloat16 if args.dtype == "bf16" else torch.float32
+        device = "cuda"
+    else:
+        torch_dtype = torch.float32
+        device = "cpu"
 
     pipe = QwenImagePipeline.from_pretrained(args.model_path, torch_dtype=torch_dtype)
-    pipe = pipe.to(accelerator.device)
+    pipe = pipe.to(device)
 
 
-    dir_path = '/'.join(args.transformer_lora_path.split('/')[:-1]) 
-    cleaned_safetensors_file = args.transformer_lora_path.split('/')[-1].replace(".safetensors", "_cleaned.safetensors")
-    new_path = f"{dir_path}/{cleaned_safetensors_file}"
-    print(f"{new_path} exists")
+    if args.transformer_lora_path:
+        dir_path = '/'.join(args.transformer_lora_path.split('/')[:-1]) 
+        cleaned_safetensors_file = args.transformer_lora_path.split('/')[-1].replace(".safetensors", "_cleaned.safetensors")
+        new_path = f"{dir_path}/{cleaned_safetensors_file}"
+        print(f"{new_path} exists")
 
-    if not os.path.exists(new_path):
-        print(f"Creating {new_path}...")
-        state_dict = load_file(f"{args.transformer_lora_path}")
-        state_dict = convert_lora_weights_before_load(state_dict, new_path)
+        if not os.path.exists(new_path):
+            print(f"Creating {new_path}...")
+            state_dict = load_file(f"{args.transformer_lora_path}")
+            state_dict = convert_lora_weights_before_load(args, state_dict, new_path)
 
-    pipe.load_lora_weights(dir_path, weight_name=cleaned_safetensors_file)
+        pipe.load_lora_weights(dir_path, weight_name=cleaned_safetensors_file)
 
 
-    # loading new tokenizer and text encoder here!!!!
-    tokenizer = AutoTokenizer.from_pretrained(args.tokenizer_path)
+    # loading new tokenizer and embeddings here!!!!
+    if args.tokenizer_path and args.embeddings_path:
+        tokenizer = AutoTokenizer.from_pretrained(args.tokenizer_path)
 
-    text_encoder = TextEncoder.from_pretrained(args.text_encoder_path,
-                                            ignore_mismatched_sizes=True,
-                                            torch_dtype=torch_dtype).to(accelerator.device)
+        text_encoder = TextEncoder.from_pretrained(args.model_path,
+                                                   subfolder="text_encoder",
+                                                   torch_dtype=torch_dtype).to(device)
 
-    text_encoder.resize_token_embeddings(len(tokenizer))
-    pipe.tokenizer = tokenizer
+        main_state_dict = text_encoder.language_model.state_dict()
 
-    pipe.text_encoder = text_encoder # verify the placement thoroughly to check if new tokens embeddings are loaded
+        state_dict = load_file(args.embeddings_path)["emb_params"].to(device)
+        offset = len(tokenizer.get_vocab()) - state_dict.size(0)
+        main_state_dict["embed_tokens.weight"] = torch.cat([main_state_dict["embed_tokens.weight"][:offset], state_dict])
+
+        text_encoder.resize_token_embeddings(len(tokenizer))
+
+        text_encoder.language_model.load_state_dict(main_state_dict)
+
+        pipe.tokenizer = tokenizer
+
+        pipe.text_encoder = text_encoder # verify the placement thoroughly to check if new tokens embeddings are loaded
 
     return pipe
 
@@ -247,13 +260,14 @@ def run_generation(
 
     args = parse_args()
 
-    with open(args.token_abstraction_json_path, "r") as file:
-        representation_tokens = json.load(file)
+    if args.token_abstraction_json_path:
+        with open(args.token_abstraction_json_path, "r") as file:
+            representation_tokens = json.load(file)
 
-    special_tokens = list(representation_tokens.keys())
+        special_tokens = list(representation_tokens.keys())
 
-    for special_token in special_tokens:
-        prompt = prompt.replace(special_token, representation_tokens[special_token][0].replace(" ", ''))
+        for special_token in special_tokens:
+            prompt = prompt.replace(special_token, representation_tokens[special_token][0].replace(" ", ''))
 
     print(prompt)
 
