@@ -1,8 +1,6 @@
 from pathlib import Path
 from typing import Dict
 from huggingface_hub import snapshot_download
-import os
-
 from utils.logger import setup_logger
 
 logger = setup_logger(__name__)
@@ -13,38 +11,34 @@ class DownloadError(Exception):
 
 
 class Downloader:
-    
-    def __init__(self, cache_dir: str = "/dheyo/lora-infer"):
+    def __init__(self, cache_dir: str = "./cache"):
         self.cache_dir = Path(cache_dir)
         try:
             self.cache_dir.mkdir(parents=True, exist_ok=True)
         except Exception as e:
             raise DownloadError(f"Failed to create cache directory {cache_dir}: {str(e)}")
     
-    def download_all(self, args) -> Dict[str, str]:
+    def download_all(self, job_request: Dict[str, str]) -> Dict[str, str]:
         try:
+            self._validate_request(job_request)
+            
+            cache_dir = job_request.get("cache_dir", "./cache")
+            if cache_dir != str(self.cache_dir):
+                self.cache_dir = Path(cache_dir)
+                self.cache_dir.mkdir(parents=True, exist_ok=True)
+            
             model_paths = {}
             
             logger.info("Downloading base model...")
-            model_paths['model'] = self.download_model(args.model_path)
+            model_paths['model'] = self.download_model(job_request["model_path"])
             
-            if args.hf_lora_id:
+            if job_request.get("hf_lora_id"):
                 logger.info("Downloading HuggingFace LoRA bundle...")
-                lora_paths = self.download_lora_bundle(args.hf_lora_id)
+                lora_paths = self.download_lora_bundle(job_request["hf_lora_id"])
                 model_paths.update(lora_paths)
-            elif args.local_lora_config:
+            elif job_request.get("local_lora_config"):
                 logger.info("Using local LoRA configuration...")
-                local_paths = {
-                    'lora_weights': args.transformer_lora_path,
-                    'tokenizer': args.tokenizer_path,
-                    'embeddings': args.embeddings_path,
-                    'token_mapping': args.token_abstraction_json_path
-                }
-                
-                for component, path in local_paths.items():
-                    if path and not Path(path).exists():
-                        raise DownloadError(f"Local {component} path does not exist: {path}")
-                
+                local_paths = self._get_local_lora_paths(job_request)
                 model_paths.update(local_paths)
             
             logger.info(f"Successfully prepared components: {list(model_paths.keys())}")
@@ -54,6 +48,29 @@ class Downloader:
             if isinstance(e, DownloadError):
                 raise
             raise DownloadError(f"Download process failed: {str(e)}")
+    
+    def _validate_request(self, job_request: Dict[str, str]):
+        if not job_request.get("model_path"):
+            raise DownloadError("model_path is required")
+        
+        if job_request.get("local_lora_config"):
+            required_fields = ["transformer_lora_path", "tokenizer_path", "embeddings_path"]
+            missing = [field for field in required_fields if not job_request.get(field)]
+            if missing:
+                raise DownloadError(f"local_lora_config requires: {missing}")
+            
+            for field in required_fields:
+                path = job_request[field]
+                if path and not Path(path).exists():
+                    raise DownloadError(f"Local {field} path does not exist: {path}")
+    
+    def _get_local_lora_paths(self, job_request: Dict[str, str]) -> Dict[str, str]:
+        return {
+            'lora_weights': job_request.get('transformer_lora_path'),
+            'tokenizer': job_request.get('tokenizer_path'),
+            'embeddings': job_request.get('embeddings_path'),
+            'token_mapping': job_request.get('token_abstraction_json_path')
+        }
     
     def download_model(self, model_id: str) -> str:
         try:

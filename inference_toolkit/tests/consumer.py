@@ -1,69 +1,56 @@
-#!/usr/bin/env python3
-"""
-Worker: Wait for request -> Process job -> Upload to S3 -> Push response
-"""
 
-import sys
+import json
+import argparse
 import os
+import sys
+from pathlib import Path
+
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from services.redis_processor import RedisProcessor
-from services.uploader import Uploader
 from core.job_orchestrator import JobOrchestrator
+from utils.logger import setup_logger
+
+logger = setup_logger(__name__)
 
 
-def process_job():
-    redis_processor = RedisProcessor()
-    uploader = Uploader.create_uploader("s3")
+def parse_args():
+    parser = argparse.ArgumentParser(description="Consumer for processing jobs from Redis queue")
     
-    print("Waiting for job request...")
-    args = redis_processor.pop_request("inference_requests", timeout=120)
+    parser.add_argument("--request_queue", type=str, 
+                       default=os.getenv("REDIS_REQUEST_QUEUE", "inference_requests"),
+                       help="Redis queue name for job requests")
+    parser.add_argument("--response_queue", type=str, 
+                       default=os.getenv("REDIS_RESPONSE_QUEUE", "inference_responses"),
+                       help="Redis queue name for job responses")
+    parser.add_argument("--timeout", type=int, 
+                       default=int(os.getenv("REDIS_TIMEOUT", "30")),
+                       help="Timeout in seconds for waiting for jobs")
+    parser.add_argument("--uploader_type", type=str, 
+                       default=os.getenv("UPLOADER_TYPE", "s3"),
+                       choices=["s3"], help="Type of uploader to use")
     
-    if args is None:
-        print("No job received")
-        return
-    
-    print(f"Processing job: {args.job_name}")
-    
-    orchestrator = JobOrchestrator(args)
-    success = orchestrator.run_job([args.instruction])
-    
-    job_result = orchestrator.get_status_dict()
-    job_result['success'] = success
-    
-    if success:
-        generated_files = job_result.get('generated_files', [])
-        print(f"Job completed. Generated {len(generated_files)} files")
-        
-        if generated_files:
-            user_id = f"user_{args.job_name}"
-            generation_id = job_result['job_id']
-            
-            upload_results = uploader.upload_generated_files(
-                generated_files=generated_files,
-                user_id=user_id,
-                generation_id=generation_id
-            )
-            
-            successful_uploads = [r for r in upload_results if r['success']]
-            print(f"Uploaded {len(successful_uploads)}/{len(upload_results)} files")
-            
-            job_result['uploaded_files'] = [r['s3_url'] for r in successful_uploads]
-        else:
-            job_result['uploaded_files'] = []
-    else:
-        print("Job failed")
-        job_result['uploaded_files'] = []
-    
-    redis_processor.push_response("inference_responses", job_result)
-    print("Response pushed to queue")
+    return parser.parse_args()
 
 
 def main():
     try:
-        process_job()
+        args = parse_args()
+        
+        logger.info(f"Starting consumer with queues: {args.request_queue} -> {args.response_queue}")
+        logger.info(f"Timeout: {args.timeout}s, Uploader: {args.uploader_type}")
+        
+        orchestrator = JobOrchestrator(
+            request_queue=args.request_queue,
+            response_queue=args.response_queue,
+            timeout=args.timeout,
+            uploader_type=args.uploader_type
+        )
+        
+        orchestrator.run()
+        
     except Exception as e:
-        print(f"Error: {str(e)}")
+        logger.error(f"Consumer failed: {str(e)}")
+        sys.exit(1)
 
 
 if __name__ == "__main__":

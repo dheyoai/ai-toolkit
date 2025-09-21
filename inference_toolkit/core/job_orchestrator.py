@@ -1,13 +1,14 @@
-import json
 import uuid
-import traceback
+import json
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import List, Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 
+from services.redis_processor import RedisProcessor
 from services.downloader import Downloader
 from services.generator import Generator
+from services.uploader import Uploader
 from services.cleanup import Cleanup
 from utils.logger import setup_logger
 
@@ -15,191 +16,333 @@ logger = setup_logger(__name__)
 
 
 class JobStatus(Enum):
-    """Job status enumeration."""
     CREATED = "created"
     DOWNLOADING = "downloading"
     GENERATING = "generating"
+    UPLOADING = "uploading"
     CLEANING = "cleaning"
     COMPLETED = "completed"
     FAILED = "failed"
 
 
-class JobError(Exception):
-    def __init__(self, message: str, stage: str = None):
-        super().__init__(message)
-        self.stage = stage
-
-
-class JobOrchestrator:    
-    def __init__(self, args):
-        self.args = args
-        self.job_id = str(uuid.uuid4())
-        self.job_dir = Path(args.output_dir) / args.job_name / self.job_id
+class JobOrchestrator:
+    def __init__(self, request_queue: str, response_queue: str, timeout: int = 30, uploader_type: str = "s3"):
+        self.request_queue = request_queue
+        self.response_queue = response_queue
+        self.timeout = timeout
+        self.uploader_type = uploader_type
         
-        try:
-            self.job_dir.mkdir(parents=True, exist_ok=True)
-        except Exception as e:
-            raise JobError(f"Failed to create job directory: {str(e)}", "initialization")
+        self.redis_processor = RedisProcessor()
         
-        self.status = JobStatus.CREATED
-        self.created_at = datetime.now()
-        self.updated_at = self.created_at
-        self.generated_files = []
-        self.error_message = None
-        self.error_stage = None
-        self.error_traceback = None
+    def run(self):
+        logger.info(f"Starting job orchestrator with queues: {self.request_queue} -> {self.response_queue}")
+        logger.info(f"Will timeout after {self.timeout}s if no jobs available")
         
-        try:
-            self.downloader = Downloader(args.cache_dir)
-            logger.info("Downloader initialized successfully")
-        except Exception as e:
-            raise JobError(f"Failed to initialize downloader: {str(e)}", "initialization")
-        
-        try:
-            self.generator = Generator.create_generator(args.model_type, args)
-            logger.info(f"Generator for {args.model_type} initialized successfully")
-        except Exception as e:
-            raise JobError(f"Failed to initialize generator: {str(e)}", "initialization")
-        
-        self.cleanup = None
-        if args.cleanup_local or args.cleanup_cache:
+        job_count = 0
+        while True:
             try:
-                self.cleanup = Cleanup(args)
-                logger.info("Cleanup service initialized successfully")
+                logger.info(f"Waiting for job requests... (timeout: {self.timeout}s)")
+                job_request = self.redis_processor.pop_request(self.request_queue, timeout=self.timeout)
+                
+                if job_request is None:
+                    logger.info(f"No jobs received within {self.timeout}s timeout. Processed {job_count} jobs total. Exiting.")
+                    break
+                
+                job_count += 1
+                logger.info(f"Received job {job_count}, processing...")
+                self._process_job(job_request, job_count)
+                
+            except KeyboardInterrupt:
+                logger.info(f"Consumer interrupted by user. Processed {job_count} jobs total.")
+                break
             except Exception as e:
-                logger.warning(f"Failed to initialize cleanup service: {str(e)}")
-                # Don't fail the job for cleanup initialization issues
+                logger.error(f"Error in main loop: {str(e)}")
+                continue
         
-        logger.info(f"Job {self.job_id} created successfully")
-        self._save_status()
+        logger.info(f"Job orchestrator finished. Total jobs processed: {job_count}")
+        return job_count
     
-    def run_job(self, prompts: List[str]) -> bool:
+    def _process_job(self, job_request: Dict[str, Any], job_number: int):
+        job_id = str(uuid.uuid4())
+        job_name = job_request.get("job_name", "unknown")
+        
+        job_state = {
+            "job_id": job_id,
+            "job_name": job_name,
+            "job_number": job_number,
+            "status": JobStatus.CREATED.value,
+            "created_at": datetime.now().isoformat(),
+            "updated_at": datetime.now().isoformat(),
+            "success": False,
+            "stages": {
+                "download": {"status": "pending", "start_time": None, "end_time": None, "error": None, "details": {}},
+                "generate": {"status": "pending", "start_time": None, "end_time": None, "error": None, "details": {}},
+                "upload": {"status": "pending", "start_time": None, "end_time": None, "error": None, "details": {}},
+                "cleanup": {"status": "pending", "start_time": None, "end_time": None, "error": None, "details": {}}
+            },
+            "generated_files": [],
+            "uploaded_files": [],
+            "upload_details": [],
+            "error_message": None,
+            "error_stage": None,
+            "processing_time": None,
+            "request_details": {
+                "model_type": job_request.get("model_type"),
+                "model_path": job_request.get("model_path"),
+                "num_images": job_request.get("num_images_per_prompt", 1),
+                "inference_steps": job_request.get("num_inference_steps", 50),
+                "aspect_ratio": job_request.get("aspect_ratio", "16:9"),
+                "seed": job_request.get("seed", 42),
+                "has_lora": bool(job_request.get("hf_lora_id") or job_request.get("local_lora_config")),
+                "cleanup_requested": {
+                    "local": job_request.get("cleanup_local", False),
+                    "cache": job_request.get("cleanup_cache", False)
+                }
+            }
+        }
+        
+        start_time = datetime.now()
+        
         try:
-            if not prompts:
-                raise JobError("No prompts provided", "validation")
+            logger.info(f"Processing job #{job_number}: {job_name} (ID: {job_id})")
             
-            logger.info(f"Starting job {self.job_id} with {len(prompts)} prompts")
+            self._update_job_status(job_state, JobStatus.DOWNLOADING)
+            model_paths = self._download_stage(job_request, job_state)
             
-            self._update_status(JobStatus.DOWNLOADING)
-            model_paths = self._download_models()
+            self._update_job_status(job_state, JobStatus.GENERATING)
+            generated_files = self._generate_stage(job_request, model_paths, job_state)
             
-            self._update_status(JobStatus.GENERATING)
-            self.generated_files = self._generate_images(prompts, model_paths)
+            self._update_job_status(job_state, JobStatus.UPLOADING)
+            uploaded_files, upload_details = self._upload_stage(job_request, generated_files, job_id, job_state)
             
-            if self.cleanup:
-                self._update_status(JobStatus.CLEANING)
-                self._cleanup_files()
+            self._update_job_status(job_state, JobStatus.CLEANING)
+            self._cleanup_stage(job_request, generated_files, job_state)
             
-            self._update_status(JobStatus.COMPLETED)
-            logger.info(f"Job {self.job_id} completed successfully")
-            return True
+            processing_time = (datetime.now() - start_time).total_seconds()
             
-        except JobError as e:
-            self.error_message = str(e)
-            self.error_stage = e.stage
-            self.error_traceback = traceback.format_exc()
-            self._update_status(JobStatus.FAILED)
-            logger.error(f"Job {self.job_id} failed in stage '{e.stage}': {e}")
-            return False
+            job_state.update({
+                "status": JobStatus.COMPLETED.value,
+                "success": True,
+                "generated_files": generated_files,
+                "uploaded_files": uploaded_files,
+                "upload_details": upload_details,
+                "processing_time": round(processing_time, 2),
+                "updated_at": datetime.now().isoformat()
+            })
+            
+            logger.info(f"Job #{job_number} completed successfully in {processing_time:.2f}s")
             
         except Exception as e:
-            self.error_message = f"Unexpected error: {str(e)}"
-            self.error_stage = self.status.value
-            self.error_traceback = traceback.format_exc()
-            self._update_status(JobStatus.FAILED)
-            logger.error(f"Job {self.job_id} failed with unexpected error: {e}", exc_info=True)
-            return False
+            processing_time = (datetime.now() - start_time).total_seconds()
+            error_msg = str(e)
+            logger.error(f"Job #{job_number} failed after {processing_time:.2f}s: {error_msg}")
+            
+            job_state.update({
+                "status": JobStatus.FAILED.value,
+                "error_message": error_msg,
+                "error_stage": job_state["status"],
+                "processing_time": round(processing_time, 2),
+                "updated_at": datetime.now().isoformat()
+            })
+        
+        finally:
+            self._save_job_status(job_state)
+            self._push_response(job_state)
     
-    def _download_models(self) -> Dict[str, str]:
+    def _update_job_status(self, job_state: Dict[str, Any], status: JobStatus):
+        job_state["status"] = status.value
+        job_state["updated_at"] = datetime.now().isoformat()
+        logger.info(f"Job {job_state['job_name']} status: {status.value}")
+    
+    def _download_stage(self, job_request: Dict[str, Any], job_state: Dict[str, Any]) -> Dict[str, str]:
+        stage = job_state["stages"]["download"]
+        stage["start_time"] = datetime.now().isoformat()
+        stage["status"] = "running"
+        
         try:
-            logger.info("Starting model download...")
-            model_paths = self.downloader.download_all(self.args)
+            downloader = Downloader()
+            model_paths = downloader.download_all(job_request)
             
-            for component, path in model_paths.items():
-                if not Path(path).exists():
-                    raise JobError(f"Downloaded {component} path does not exist: {path}", "downloading")
+            stage.update({
+                "status": "completed",
+                "end_time": datetime.now().isoformat(),
+                "details": {
+                    "components_downloaded": list(model_paths.keys()),
+                    "model_path": model_paths.get("model"),
+                    "has_lora": "lora_weights" in model_paths,
+                    "has_custom_tokenizer": "tokenizer" in model_paths,
+                    "has_embeddings": "embeddings" in model_paths
+                }
+            })
             
-            logger.info(f"Successfully downloaded {len(model_paths)} components")
+            logger.info(f"Download completed: {len(model_paths)} components")
             return model_paths
             
         except Exception as e:
-            if isinstance(e, JobError):
-                raise
-            raise JobError(f"Model download failed: {str(e)}", "downloading")
+            stage.update({
+                "status": "failed",
+                "end_time": datetime.now().isoformat(),
+                "error": str(e)
+            })
+            raise
     
-    def _generate_images(self, prompts: List[str], model_paths: Dict[str, str]) -> List[str]:
+    def _generate_stage(self, job_request: Dict[str, Any], model_paths: Dict[str, str], job_state: Dict[str, Any]) -> List[str]:
+        stage = job_state["stages"]["generate"]
+        stage["start_time"] = datetime.now().isoformat()
+        stage["status"] = "running"
+        
         try:
-            logger.info(f"Starting image generation for {len(prompts)} prompts...")
+            generator = Generator.create_generator(job_request)
+            generated_files = generator.generate_batch(job_request, model_paths)
             
-            if not model_paths:
-                raise JobError("No model paths provided for generation", "generating")
+            stage.update({
+                "status": "completed",
+                "end_time": datetime.now().isoformat(),
+                "details": {
+                    "files_generated": len(generated_files),
+                    "images_per_prompt": job_request.get("num_images_per_prompt", 1),
+                    "inference_steps": job_request.get("num_inference_steps", 50),
+                    "model_type": job_request.get("model_type"),
+                    "aspect_ratio": job_request.get("aspect_ratio")
+                }
+            })
             
-            generated_files = self.generator.generate_batch(prompts, model_paths, self.job_dir)
-            
-            missing_files = [f for f in generated_files if not Path(f).exists()]
-            if missing_files:
-                raise JobError(f"Generated files missing: {missing_files[:3]}...", "generating")
-            
-            logger.info(f"Successfully generated {len(generated_files)} images")
+            logger.info(f"Generation completed: {len(generated_files)} files")
             return generated_files
             
         except Exception as e:
-            if isinstance(e, JobError):
-                raise
-            raise JobError(f"Image generation failed: {str(e)}", "generating")
+            stage.update({
+                "status": "failed",
+                "end_time": datetime.now().isoformat(),
+                "error": str(e)
+            })
+            raise
     
-    def _cleanup_files(self):
+    def _upload_stage(self, job_request: Dict[str, Any], generated_files: List[str], job_id: str, job_state: Dict[str, Any]) -> tuple:
+        stage = job_state["stages"]["upload"]
+        stage["start_time"] = datetime.now().isoformat()
+        stage["status"] = "running"
+        
         try:
-            logger.info("Starting cleanup...")
-            self.cleanup.cleanup_job(self.generated_files, self.job_dir)
+            if not generated_files:
+                stage.update({
+                    "status": "skipped",
+                    "end_time": datetime.now().isoformat(),
+                    "details": {"reason": "no_files_to_upload"}
+                })
+                return [], []
+            
+            uploader = Uploader.create_uploader(self.uploader_type)
+            user_id = f"user_{job_request.get('job_name', 'unknown')}"
+            
+            upload_results = uploader.upload_generated_files(
+                generated_files=generated_files,
+                user_id=user_id,
+                generation_id=job_id
+            )
+            
+            successful_uploads = [r for r in upload_results if r['success']]
+            failed_uploads = [r for r in upload_results if not r['success']]
+            uploaded_files = [r['s3_url'] for r in successful_uploads]
+            
+            stage.update({
+                "status": "completed",
+                "end_time": datetime.now().isoformat(),
+                "details": {
+                    "total_files": len(generated_files),
+                    "successful_uploads": len(successful_uploads),
+                    "failed_uploads": len(failed_uploads),
+                    "upload_success_rate": round(len(successful_uploads) / len(generated_files) * 100, 2) if generated_files else 0,
+                    "user_id": user_id,
+                    "generation_id": job_id,
+                    "failed_files": [r['local_path'] for r in failed_uploads] if failed_uploads else []
+                }
+            })
+            
+            logger.info(f"Upload completed: {len(successful_uploads)}/{len(generated_files)} files")
+            return uploaded_files, upload_results
+            
+        except Exception as e:
+            stage.update({
+                "status": "failed",
+                "end_time": datetime.now().isoformat(),
+                "error": str(e)
+            })
+            raise
+    
+    def _cleanup_stage(self, job_request: Dict[str, Any], generated_files: List[str], job_state: Dict[str, Any]):
+        stage = job_state["stages"]["cleanup"]
+        stage["start_time"] = datetime.now().isoformat()
+        stage["status"] = "running"
+        
+        try:
+            cleanup_local = job_request.get("cleanup_local", False)
+            cleanup_cache = job_request.get("cleanup_cache", False)
+            
+            if not cleanup_local and not cleanup_cache:
+                stage.update({
+                    "status": "skipped",
+                    "end_time": datetime.now().isoformat(),
+                    "details": {"reason": "cleanup_not_requested"}
+                })
+                return
+            
+            cleanup = Cleanup()
+            cleanup.cleanup_job(job_request, generated_files)
+            
+            stage.update({
+                "status": "completed",
+                "end_time": datetime.now().isoformat(),
+                "details": {
+                    "cleanup_local": cleanup_local,
+                    "cleanup_cache": cleanup_cache,
+                    "files_cleaned": len(generated_files) if cleanup_local else 0
+                }
+            })
+            
             logger.info("Cleanup completed successfully")
             
         except Exception as e:
-            # Don't fail the job for cleanup errors, just log them
-            logger.warning(f"Cleanup failed (job still successful): {str(e)}")
+            stage.update({
+                "status": "failed",
+                "end_time": datetime.now().isoformat(),
+                "error": str(e)
+            })
+            logger.warning(f"Cleanup failed (non-critical): {str(e)}")
     
-    def _update_status(self, status: JobStatus):
+    def _save_job_status(self, job_state: Dict[str, Any]):
         try:
-            self.status = status
-            self.updated_at = datetime.now()
-            self._save_status()
-            logger.info(f"Job {self.job_id} status updated to: {status.value}")
+            output_dir = Path("./job_status")
+            output_dir.mkdir(exist_ok=True)
+            
+            status_file = output_dir / f"job_{job_state['job_id']}.json"
+            with open(status_file, 'w') as f:
+                json.dump(job_state, f, indent=2)
+                
+            logger.debug(f"Job status saved to: {status_file}")
             
         except Exception as e:
-            logger.error(f"Failed to update status: {e}")
-            # Don't raise here as status updates are not critical
+            logger.error(f"Failed to save job status: {str(e)}")
     
-    def _save_status(self):
+    def _push_response(self, job_state: Dict[str, Any]):
         try:
-            status_data = {
-                'job_id': self.job_id,
-                'job_name': self.args.job_name,
-                'status': self.status.value,
-                'created_at': self.created_at.isoformat(),
-                'updated_at': self.updated_at.isoformat(),
-                'generated_files': self.generated_files,
-                'error_message': self.error_message,
-                'error_stage': self.error_stage,
-                'error_traceback': self.error_traceback
+            response = {
+                "job_id": job_state["job_id"],
+                "job_name": job_state["job_name"],
+                "status": job_state["status"],
+                "success": job_state["success"],
+                "uploaded_files": job_state.get("uploaded_files", []),
+                "error_message": job_state.get("error_message"),
+                "timestamp": job_state["updated_at"],
+                "processing_time": job_state.get("processing_time"),
+                "summary": {
+                    "files_generated": len(job_state.get("generated_files", [])),
+                    "files_uploaded": len(job_state.get("uploaded_files", [])),
+                    "stages_completed": sum(1 for stage in job_state["stages"].values() if stage["status"] == "completed")
+                }
             }
             
-            status_file = self.job_dir / "job_status.json"
-            with open(status_file, 'w') as f:
-                json.dump(status_data, f, indent=2)
-                
+            self.redis_processor.push_response(self.response_queue, response)
+            
         except Exception as e:
-            logger.error(f"Failed to save job status: {e}")
-            # Don't raise here as status saving is not critical for job execution
-    
-    def get_status_dict(self) -> Dict[str, Any]:
-        return {
-            'job_id': self.job_id,
-            'job_name': self.args.job_name,
-            'status': self.status.value,
-            'created_at': self.created_at.isoformat(),
-            'updated_at': self.updated_at.isoformat(),
-            'generated_files': self.generated_files,
-            'error_message': self.error_message,
-            'error_stage': self.error_stage,
-            'job_dir': str(self.job_dir)
-        }
+            logger.error(f"Failed to push response: {str(e)}")

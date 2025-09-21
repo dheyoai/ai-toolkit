@@ -4,7 +4,6 @@ from pathlib import Path
 from typing import List, Dict, Optional
 import boto3
 from botocore.exceptions import ClientError, NoCredentialsError
-
 from utils.logger import setup_logger
 
 logger = setup_logger(__name__)
@@ -16,31 +15,37 @@ class UploaderError(Exception):
 
 class S3Uploader:
     def __init__(self):
+        self._validate_environment()
+        self._initialize_client()
+    
+    def _validate_environment(self):
         self.bucket_name = os.getenv('S3_BUCKET_NAME')
-        aws_access_key_id = os.getenv('AWS_ACCESS_KEY_ID')
-        aws_secret_access_key = os.getenv('AWS_SECRET_ACCESS_KEY')
-        region_name = os.getenv('AWS_DEFAULT_REGION', 'us-west-1')
+        self.aws_access_key_id = os.getenv('AWS_ACCESS_KEY_ID')
+        self.aws_secret_access_key = os.getenv('AWS_SECRET_ACCESS_KEY')
+        self.region_name = os.getenv('AWS_DEFAULT_REGION', 'us-west-1')
         
-        if not self.bucket_name:
-            raise UploaderError("S3_BUCKET_NAME environment variable is required")
+        required_vars = [
+            ('S3_BUCKET_NAME', self.bucket_name),
+            ('AWS_ACCESS_KEY_ID', self.aws_access_key_id),
+            ('AWS_SECRET_ACCESS_KEY', self.aws_secret_access_key)
+        ]
         
-        if not aws_access_key_id:
-            raise UploaderError("AWS_ACCESS_KEY_ID environment variable is required")
-            
-        if not aws_secret_access_key:
-            raise UploaderError("AWS_SECRET_ACCESS_KEY environment variable is required")
-        
+        missing_vars = [var_name for var_name, var_value in required_vars if not var_value]
+        if missing_vars:
+            raise UploaderError(f"Missing required environment variables: {missing_vars}")
+    
+    def _initialize_client(self):
         try:
             self.s3_client = boto3.client(
                 's3',
-                aws_access_key_id=aws_access_key_id,
-                aws_secret_access_key=aws_secret_access_key,
-                region_name=region_name
+                aws_access_key_id=self.aws_access_key_id,
+                aws_secret_access_key=self.aws_secret_access_key,
+                region_name=self.region_name
             )
             
             self._test_connection()
             
-            logger.info(f"S3 uploader initialized for bucket: {self.bucket_name} in region: {region_name}")
+            logger.info(f"S3 uploader initialized for bucket: {self.bucket_name} in region: {self.region_name}")
             
         except Exception as e:
             raise UploaderError(f"Failed to initialize S3 client: {str(e)}")
@@ -48,50 +53,61 @@ class S3Uploader:
     def upload_generated_files(self, generated_files: List[str], 
                              user_id: str, 
                              generation_id: Optional[str] = None) -> List[Dict[str, str]]:
+        try:
+            self._validate_upload_inputs(generated_files, user_id)
+            
+            if not generation_id:
+                generation_id = str(uuid.uuid4())
+            
+            logger.info(f"Starting upload for {len(generated_files)} files")
+            logger.info(f"User ID: {user_id}, Generation ID: {generation_id}")
+            
+            upload_results = []
+            successful_uploads = 0
+            
+            for file_path in generated_files:
+                try:
+                    result = self._upload_single_file(file_path, user_id, generation_id)
+                    upload_results.append(result)
+                    
+                    if result['success']:
+                        successful_uploads += 1
+                        logger.info(f"Uploaded: {result['s3_url']}")
+                    else:
+                        logger.error(f"Failed: {file_path} - {result['error']}")
+                        
+                except Exception as e:
+                    error_msg = f"Unexpected error uploading {file_path}: {str(e)}"
+                    logger.error(error_msg)
+                    upload_results.append({
+                        'local_path': file_path,
+                        's3_url': None,
+                        's3_key': None,
+                        'success': False,
+                        'error': error_msg
+                    })
+            
+            logger.info(f"Upload completed: {successful_uploads}/{len(generated_files)} files successful")
+            
+            if successful_uploads == 0:
+                raise UploaderError("All file uploads failed")
+            
+            return upload_results
+            
+        except UploaderError:
+            raise
+        except Exception as e:
+            raise UploaderError(f"Upload process failed: {str(e)}")
+    
+    def _validate_upload_inputs(self, generated_files: List[str], user_id: str):
         if not generated_files:
-            logger.warning("No files provided for upload")
-            return []
+            raise UploaderError("No files provided for upload")
         
         if not user_id or not user_id.strip():
             raise UploaderError("User ID is required for upload")
         
-        if not generation_id:
-            generation_id = str(uuid.uuid4())
-        
-        logger.info(f"Starting upload for {len(generated_files)} files")
-        logger.info(f"User ID: {user_id}, Generation ID: {generation_id}")
-        
-        upload_results = []
-        successful_uploads = 0
-        
-        for file_path in generated_files:
-            try:
-                result = self._upload_single_file(file_path, user_id, generation_id)
-                upload_results.append(result)
-                
-                if result['success']:
-                    successful_uploads += 1
-                    logger.info(f"Uploaded: {result['s3_url']}")
-                else:
-                    logger.error(f"Failed: {file_path} - {result['error']}")
-                    
-            except Exception as e:
-                error_msg = f"Unexpected error uploading {file_path}: {str(e)}"
-                logger.error(error_msg)
-                upload_results.append({
-                    'local_path': file_path,
-                    's3_url': None,
-                    's3_key': None,
-                    'success': False,
-                    'error': error_msg
-                })
-        
-        logger.info(f"Upload completed: {successful_uploads}/{len(generated_files)} files successful")
-        
-        if successful_uploads == 0:
-            raise UploaderError("All file uploads failed")
-        
-        return upload_results
+        if not isinstance(generated_files, list):
+            raise UploaderError("Generated files must be a list")
     
     def _upload_single_file(self, file_path: str, user_id: str, generation_id: str) -> Dict[str, str]:
         try:
@@ -164,7 +180,8 @@ class S3Uploader:
     
     def _generate_s3_key(self, file_path: Path, user_id: str, generation_id: str) -> str:
         filename = file_path.name
-        s3_key = f"images/{user_id}/{generation_id}/{filename}"
+        key_prefix = os.getenv('S3_KEY_PREFIX', 'images')
+        s3_key = f"{key_prefix}/{user_id}/{generation_id}/{filename}"
         return s3_key
     
     def _get_content_type(self, file_path: Path) -> str:
@@ -200,28 +217,20 @@ class S3Uploader:
             raise UploaderError("AWS credentials not found in environment variables")
         except Exception as e:
             raise UploaderError(f"S3 connection test failed: {str(e)}")
-    
-    def get_bucket_info(self) -> Dict[str, str]:
-        try:
-            response = self.s3_client.head_bucket(Bucket=self.bucket_name)
-            return {
-                'bucket_name': self.bucket_name,
-                'region': response.get('ResponseMetadata', {}).get('HTTPHeaders', {}).get('x-amz-bucket-region', 'unknown'),
-                'status': 'accessible'
-            }
-        except Exception as e:
-            return {
-                'bucket_name': self.bucket_name,
-                'region': 'unknown',
-                'status': f'error: {str(e)}'
-            }
 
 
 class Uploader:
-    
     @staticmethod
     def create_uploader(upload_type: str = "s3") -> S3Uploader:
-        if upload_type == "s3":
-            return S3Uploader()
-        else:
-            raise UploaderError(f"Unsupported uploader type: {upload_type}")
+        try:
+            supported_types = ["s3"]
+            if upload_type not in supported_types:
+                raise UploaderError(f"Unsupported uploader type: {upload_type}. Supported types: {supported_types}")
+            
+            if upload_type == "s3":
+                return S3Uploader()
+                
+        except Exception as e:
+            if isinstance(e, UploaderError):
+                raise
+            raise UploaderError(f"Failed to create uploader: {str(e)}")
