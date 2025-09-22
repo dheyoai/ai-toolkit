@@ -117,7 +117,7 @@ class BaseGenerator(ABC):
             raise GeneratorError("No prompts provided (instruction, prompts, or prompts_path)")
     
     def _create_output_dir(self, job_request: Dict[str, Any]) -> Path:
-        output_dir = Path(job_request["output_dir"]) / job_request.get("job_name", "unknown") / str(uuid.uuid4())
+        output_dir = Path(job_request["output_dir"]) / job_request.get("generation_id") / str(uuid.uuid4())
         try:
             output_dir.mkdir(parents=True, exist_ok=True)
             return output_dir

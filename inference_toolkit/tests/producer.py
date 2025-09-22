@@ -14,13 +14,14 @@ logger = setup_logger(__name__)
 
 def create_request():
     return {
-        "job_name": "allu_arjun_alia_test",
+        "generation_id": "02b0db75-77f6-45e1-85c4-0ca2b1185ff3",
+        "user_id": "aakashvarma",
         "model_type": "qwen",
         "model_path": "Qwen/Qwen-Image",
         "cache_dir": "./cache",
         "hf_lora_id": "DheyoAI/allu_arjun_and_alia_bhatt_1",
         "instruction": "A close-up portrait of (([A] man)) and (([AB] woman)) sitting together in a cozy cafe, warm ambient lighting, soft bokeh background, both facing the camera with gentle smiles",
-        "num_images_per_prompt": 2,
+        "num_images_per_prompt": 1,
         "num_inference_steps": 50,
         "true_cfg_scale": 4.0,
         "aspect_ratio": "16:9",
@@ -58,7 +59,7 @@ def push_request(redis_processor, request_queue, request):
     try:
         request_json = json.dumps(request)
         redis_processor.redis_client.rpush(request_queue, request_json)
-        logger.info(f"Pushed request to {request_queue}: {request['job_name']}")
+        logger.info(f"Pushed request to {request_queue}: {request['generation_id']}")
         return True
     except Exception as e:
         logger.error(f"Failed to push request: {str(e)}")
@@ -88,8 +89,7 @@ def print_response(response):
     print("\n" + "="*50)
     print("JOB RESPONSE")
     print("="*50)
-    print(f"Job ID: {response.get('job_id')}")
-    print(f"Job Name: {response.get('job_name')}")
+    print(f"Job ID: {response.get('generation_id')}")
     print(f"Status: {response.get('status')}")
     print(f"Success: {response.get('success')}")
     print(f"Timestamp: {response.get('timestamp')}")
@@ -126,7 +126,7 @@ def clear_queues(redis_processor, request_queue, response_queue):
 
 def validate_request(request):
     required_fields = [
-        "job_name", "model_type", "model_path", "instruction",
+        "generation_id", "user_id", "model_type", "model_path", "instruction",
         "num_images_per_prompt", "num_inference_steps", "true_cfg_scale",
         "aspect_ratio", "seed", "dtype", "negative_prompt", "output_dir"
     ]

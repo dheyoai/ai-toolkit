@@ -12,7 +12,7 @@ logger = setup_logger(__name__)
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Image Generation Job System")
     
-    parser.add_argument("--job_name", type=str, required=True, help="Job name")
+    parser.add_argument("--generation_id", type=str, required=True, help="Generation Id")
     parser.add_argument("--model_type", type=str, default="qwen", choices=["qwen"], help="Model type")
     parser.add_argument("--model_path", type=str, required=True, help="Model HF ID or local path")
     
@@ -71,7 +71,7 @@ def main():
         validate_args(args)
         prompts = load_prompts(args)
         
-        logger.info(f"Starting job '{args.job_name}' with {len(prompts)} prompts")
+        logger.info(f"Starting job '{args.generation_id}' with {len(prompts)} prompts")
         
         orchestrator = JobOrchestrator(args)
         success = orchestrator.run_job(prompts)

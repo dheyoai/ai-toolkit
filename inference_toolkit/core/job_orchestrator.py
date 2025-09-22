@@ -63,12 +63,10 @@ class JobOrchestrator:
         return job_count
     
     def _process_job(self, job_request: Dict[str, Any], job_number: int):
-        job_id = str(uuid.uuid4())
-        job_name = job_request.get("job_name", "unknown")
+        job_id = job_request.get("generation_id")
         
         job_state = {
             "job_id": job_id,
-            "job_name": job_name,
             "job_number": job_number,
             "status": JobStatus.CREATED.value,
             "created_at": datetime.now().isoformat(),
@@ -104,7 +102,7 @@ class JobOrchestrator:
         start_time = datetime.now()
         
         try:
-            logger.info(f"Processing job #{job_number}: {job_name} (ID: {job_id})")
+            logger.info(f"Processing job #{job_number} with ID: {job_id}")
             
             self._update_job_status(job_state, JobStatus.DOWNLOADING)
             model_paths = self._download_stage(job_request, job_state)
@@ -152,7 +150,7 @@ class JobOrchestrator:
     def _update_job_status(self, job_state: Dict[str, Any], status: JobStatus):
         job_state["status"] = status.value
         job_state["updated_at"] = datetime.now().isoformat()
-        logger.info(f"Job {job_state['job_name']} status: {status.value}")
+        logger.info(f"Job {job_state['job_id']} status: {status.value}")
     
     def _download_stage(self, job_request: Dict[str, Any], job_state: Dict[str, Any]) -> Dict[str, str]:
         stage = job_state["stages"]["download"]
@@ -233,7 +231,7 @@ class JobOrchestrator:
                 return [], []
             
             uploader = Uploader.create_uploader(self.uploader_type)
-            user_id = f"user_{job_request.get('job_name', 'unknown')}"
+            user_id = f"{job_request.get('user_id')}"
             
             upload_results = uploader.upload_generated_files(
                 generated_files=generated_files,
@@ -327,8 +325,7 @@ class JobOrchestrator:
     def _push_response(self, job_state: Dict[str, Any]):
         try:
             response = {
-                "job_id": job_state["job_id"],
-                "job_name": job_state["job_name"],
+                "generation_id": job_state["job_id"],
                 "status": job_state["status"],
                 "success": job_state["success"],
                 "uploaded_files": job_state.get("uploaded_files", []),

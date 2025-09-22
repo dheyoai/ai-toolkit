@@ -13,7 +13,7 @@ class RedisProcessorError(Exception):
 
 class RequestSchema:
     REQUIRED_FIELDS = [
-        "job_name", "model_type", "model_path", "instruction",
+        "generation_id", "user_id", "model_type", "model_path", "instruction",
         "num_images_per_prompt", "num_inference_steps", "true_cfg_scale",
         "aspect_ratio", "seed", "dtype", "negative_prompt", "output_dir"
     ]
@@ -123,7 +123,7 @@ class RedisProcessor:
                 raise RedisProcessorError(f"Invalid JSON in request: {str(e)}")
             
             validated_request = RequestSchema.validate(request_dict)
-            logger.info(f"Successfully parsed request for job: {validated_request['job_name']}")
+            logger.info(f"Successfully parsed request for generation: {validated_request['generation_id']}")
             
             return validated_request
             

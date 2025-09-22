@@ -77,13 +77,13 @@ class Cleanup:
     def _cleanup_output_directory(self, job_request: Dict[str, Any]):
         try:
             output_dir = job_request.get("output_dir")
-            job_name = job_request.get("job_name")
+            job_id = job_request.get("job_id")
             
-            if not output_dir or not job_name:
-                logger.warning("Missing output_dir or job_name for directory cleanup")
+            if not output_dir or not job_id:
+                logger.warning("Missing output_dir or job_id for directory cleanup")
                 return
             
-            job_base_dir = Path(output_dir) / job_name
+            job_base_dir = Path(output_dir) / job_id
             
             if job_base_dir.exists():
                 shutil.rmtree(job_base_dir)
