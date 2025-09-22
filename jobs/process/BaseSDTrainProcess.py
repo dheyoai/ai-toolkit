@@ -664,7 +664,7 @@ class BaseSDTrainProcess(BaseTrainProcess):
             if self.embedding is not None:
                 embed_pattern = "".join([self.embed_config[i].trigger for i in range(len(self.embed_config))])
                 # embed_pattern = f"{embed_pattern}_*"
-                emb_filename = f'{embed_pattern}{step_num}.safetensors'
+                emb_filename = f'{embed_pattern}_embeddings{step_num}.safetensors'
                 emb_file_path = os.path.join(self.save_root, emb_filename)
                 # for combo, above will get it
                 # set current step
