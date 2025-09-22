@@ -147,7 +147,7 @@ class Downloader:
             # Find tokenizer directory
             tokenizer_found = False
             for item in lora_dir.iterdir():
-                if item.is_dir() and "tokenizer" in item.name:
+                if item.is_dir() and "tokenizer" in item.name and "best" in item.name:
                     components['tokenizer'] = str(item)
                     logger.info(f"Found tokenizer: {item.name}")
                     tokenizer_found = True
@@ -159,7 +159,7 @@ class Downloader:
             # Find LoRA weights
             lora_weights_found = False
             for item in lora_dir.iterdir():
-                if item.is_file() and "LoRA" in item.name and item.suffix == ".safetensors":
+                if item.is_file() and "LoRA" in item.name and "best" in item.name and item.suffix == ".safetensors":
                     components['lora_weights'] = str(item)
                     logger.info(f"Found LoRA weights: {item.name}")
                     lora_weights_found = True
@@ -171,7 +171,7 @@ class Downloader:
             # Find embeddings
             embeddings_found = False
             for item in lora_dir.iterdir():
-                if item.is_file() and "embeddings" in item.name and item.suffix == ".safetensors":
+                if item.is_file() and "embeddings" in item.name and "best" in item.name and item.suffix == ".safetensors":
                     components['embeddings'] = str(item)
                     logger.info(f"Found embeddings: {item.name}")
                     embeddings_found = True
