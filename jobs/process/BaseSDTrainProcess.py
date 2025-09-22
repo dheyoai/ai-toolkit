@@ -1665,6 +1665,17 @@ class BaseSDTrainProcess(BaseTrainProcess):
         flush()
         self.done_hook()
 
+        min_loss, best_step = min(self.loss_and_step_list, key=lambda x: x[0])
+        best_step_str = str(best_step)
+
+        for fname in os.listdir(self.save_root):
+            name, ext = os.path.splitext(fname)
+            if name.endswith(best_step_str):
+                old_path = os.path.join(self.save_root, fname)
+                new_path = os.path.join(self.save_root, f"{name}_best{ext}")
+                os.rename(old_path, new_path)
+                print(f"Renamed {fname} -> {fname}_best{ext}")
+
 
     def run(self):
         # torch.autograd.set_detect_anomaly(True)
@@ -2290,8 +2301,8 @@ class BaseSDTrainProcess(BaseTrainProcess):
                     batch_list.append(batch)
                     batch_step += 1
 
-                if self.epoch_num == 0:
-                    self.save_preprocessed_images(batch_list)
+                # if self.epoch_num == 0:
+                #     self.save_preprocessed_images(batch_list)
 
 
                 # setup accumulation
