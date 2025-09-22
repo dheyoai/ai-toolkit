@@ -195,3 +195,7 @@ prompts
 my_configs
 data_augmentation.py
 gradio_output_images
+gradio_app_instructions
+runs1.sh 
+runs2.sh 
+make_prompts.py 
