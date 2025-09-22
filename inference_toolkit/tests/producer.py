@@ -61,7 +61,7 @@ def wait_for_response(redis_processor, response_queue, timeout):
             if result:
                 response_data = result[1]
                 response = json.loads(response_data)
-                print_response(response)
+                print(response)
                 return True
             else:
                 logger.warning(f"Timeout waiting for response ({timeout}s)")
@@ -70,28 +70,6 @@ def wait_for_response(redis_processor, response_queue, timeout):
         logger.error(f"Error waiting for response: {str(e)}")
         return False
 
-
-def print_response(response):
-    print("\n" + "="*50)
-    print("JOB RESPONSE")
-    print("="*50)
-    print(f"Job ID: {response.get('generation_id')}")
-    print(f"Status: {response.get('status')}")
-    print(f"Success: {response.get('success')}")
-    print(f"Timestamp: {response.get('timestamp')}")
-    
-    uploaded_files = response.get('uploaded_files', [])
-    if uploaded_files:
-        print(f"\nUploaded Files ({len(uploaded_files)}):")
-        for i, url in enumerate(uploaded_files, 1):
-            print(f"  {i}. {url}")
-    else:
-        print("\nNo files uploaded")
-    
-    if response.get('error_message'):
-        print(f"\nError: {response.get('error_message')}")
-    
-    print("="*50)
 
 
 def clear_queues(redis_processor, request_queue, response_queue):
