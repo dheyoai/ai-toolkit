@@ -8,6 +8,7 @@ from typing import List, Tuple
 from safetensors.torch import load_file
 
 from PIL import Image, ImageOps
+import time 
 
 import torch
 from torchvision.transforms.functional import to_pil_image, to_tensor
@@ -28,39 +29,15 @@ global accelerator, pipeline, aspect_ratio
 
 
 """
-## PIPELINE - 1
 
-CUDA_VISIBLE_DEVICES=0 python3 -u gradio_qwen_image_aa_and_ab.py --model_path "Qwen/Qwen-Image" \
---transformer_lora_path /data/shivanvitha/dheyo_ai_toolkit/ai-toolkit/output/hub/models--shivmlops21--allu_arjun_and_alia_bhatt_1/snapshots/e3f588e48a4c67dff8dd173f5fb0343e86ddd405/aa_and_ab_qwen_image_1_LoRA_000007200.safetensors \
---tokenizer_path /data/shivanvitha/dheyo_ai_toolkit/ai-toolkit/output/hub/models--shivmlops21--allu_arjun_and_alia_bhatt_1/snapshots/e3f588e48a4c67dff8dd173f5fb0343e86ddd405/tokenizer_0_aa_and_ab_qwen_image_1__000007200 \
---text_encoder_path /data/shivanvitha/dheyo_ai_toolkit/ai-toolkit/output/hub/models--shivmlops21--allu_arjun_and_alia_bhatt_1/snapshots/e3f588e48a4c67dff8dd173f5fb0343e86ddd405/text_encoder_0_aa_and_ab_qwen_image_1__000007200 \
---token_abstraction_json_path tokens.json \
---instructions_path /data/shivanvitha/dheyo_ai_toolkit/ai-toolkit/gradio_app_instructions/aa_and_ab.md \
---port 8900
-
---------
-
-## PIPELINE - 2
-
-CUDA_VISIBLE_DEVICES=0 python3 gradio_qwen_image_aa_and_ab.py --model_path "Qwen/Qwen-Image" \
---transformer_lora_path /data/shivanvitha/dheyo_ai_toolkit/ai-toolkit/output/hub/models--shivmlops21--allu_arjun_and_alia_bhatt_3/snapshots/203d95a4cfcf0a0e6447460731541ec2777d67cb/aa_and_ab_qwen_image_3_LoRA.safetensors \
---tokenizer_path /data/shivanvitha/dheyo_ai_toolkit/ai-toolkit/output/hub/models--shivmlops21--allu_arjun_and_alia_bhatt_3/snapshots/203d95a4cfcf0a0e6447460731541ec2777d67cb/tokenizer_0_aa_and_ab_qwen_image_3_ \
---text_encoder_path /data/shivanvitha/dheyo_ai_toolkit/ai-toolkit/output/hub/models--shivmlops21--allu_arjun_and_alia_bhatt_3/snapshots/203d95a4cfcf0a0e6447460731541ec2777d67cb/text_encoder_0_aa_and_ab_qwen_image_3_ \
---token_abstraction_json_path tokens_3.json \
---instructions_path /data/shivanvitha/dheyo_ai_toolkit/ai-toolkit/gradio_app_instructions/aa_and_ab.md \
---port 8900
-
---------
-
-## RDJ Pipeline - 1
-
-CUDA_VISIBLE_DEVICES=0 python3 gradio_qwen_image_aa_and_ab.py --model_path "Qwen/Qwen-Image" \
---transformer_lora_path /data/shivanvitha/dheyo_ai_toolkit/ai-toolkit/output/robert_downey_jr_ai/rdj_ai_LoRA.safetensors \
---tokenizer_path /data/shivanvitha/dheyo_ai_toolkit/ai-toolkit/output/robert_downey_jr_ai/tokenizer_0_rdj_ai_ \
---text_encoder_path /data/shivanvitha/dheyo_ai_toolkit/ai-toolkit/output/robert_downey_jr_ai/text_encoder_0_rdj_ai_ \
---token_abstraction_json_path /data/shivanvitha/dheyo_ai_toolkit/ai-toolkit/output/robert_downey_jr_ai/tokens.json \
---instructions_path /data/shivanvitha/dheyo_ai_toolkit/ai-toolkit/gradio_app_instructions/rdj.md \
---port 7878 
+## Chris and Katie
+HIP_VISIBLE_DEVICES=7 python3 gradio_qwen_image.py --model_path "Qwen/Qwen-Image" \
+--transformer_lora_path /dheyo/shivanvitha/output/chris_katie_2/chris_katie_2_LoRA.safetensors \
+--tokenizer_path /dheyo/shivanvitha/output/chris_katie_2/tokenizer_0_chris_katie_2_ \
+--embeddings_path /dheyo/shivanvitha/output/chris_katie_2/[CH][KP].safetensors \
+--token_abstraction_json_path /dheyo/shivanvitha/output/chris_katie_2/tokens.json \
+--instructions_path /home/shivanvitha/ai-toolkit/gradio_app_instructions/ch_and_kp.md \
+--port 9898 
 
 """
 
@@ -80,7 +57,7 @@ def parse_args() -> argparse.Namespace:
         help="Path to updated tokenizer.",
     )
     parser.add_argument(
-        "--text_encoder_path", 
+        "--embeddings_path", 
         type=str,
         required=True,
         help="Path to text encoder checkpoint.",
@@ -175,17 +152,28 @@ def load_pipeline(
     pipe.load_lora_weights(dir_path, weight_name=cleaned_safetensors_file)
 
 
-    # loading new tokenizer and text encoder here!!!!
-    tokenizer = AutoTokenizer.from_pretrained(args.tokenizer_path)
+    if args.tokenizer_path and args.embeddings_path:
+        tokenizer = AutoTokenizer.from_pretrained(args.tokenizer_path)
 
-    text_encoder = TextEncoder.from_pretrained(args.text_encoder_path,
-                                            ignore_mismatched_sizes=True,
-                                            torch_dtype=torch_dtype).to(accelerator.device)
+        text_encoder = TextEncoder.from_pretrained(args.model_path,
+                                                   subfolder="text_encoder",
+                                                   torch_dtype=torch_dtype).to(accelerator.device)
 
-    text_encoder.resize_token_embeddings(len(tokenizer))
-    pipe.tokenizer = tokenizer
 
-    pipe.text_encoder = text_encoder # verify the placement thoroughly to check if new tokens embeddings are loaded
+        main_state_dict = text_encoder.language_model.state_dict()
+
+        state_dict = load_file(args.embeddings_path)["emb_params"].to(accelerator.device)
+        offset = len(tokenizer.get_vocab()) - state_dict.size(0)
+        main_state_dict["embed_tokens.weight"] = torch.cat([main_state_dict["embed_tokens.weight"][:offset], state_dict])
+
+        text_encoder.resize_token_embeddings(len(tokenizer))
+
+
+        text_encoder.language_model.load_state_dict(main_state_dict)
+
+        pipe.tokenizer = tokenizer
+
+        pipe.text_encoder = text_encoder 
 
     return pipe
 
@@ -273,6 +261,14 @@ def run_generation(
     del results
     torch.cuda.empty_cache()
     
+    timestamp = str(time.strftime("%d-%m-%y_%H-%M-%S"))
+
+    os.makedirs("gradio_output_images", exist_ok=True)
+
+    for idx in range(len(output_images)):
+        output_images[idx].save(f"gradio_output_images/output_{idx}_{timestamp}.png")
+
+
     return gr.update(visible=True, value=output_images)
 
 
@@ -334,7 +330,7 @@ with gr.Blocks() as demo:
 
     with gr.Row():
         seed = gr.Slider(0, sys.maxsize, value=0, step=1, label="Random Seed")
-        numimgpp = gr.Slider(1, 5, value=1, step=1, label="Number of images per prompt")
+        numimgpp = gr.Slider(1, 5, value=3, step=1, label="Number of images per prompt")
 
     # with gr.Row():
     #     dropdown = gr.Dropdown(
