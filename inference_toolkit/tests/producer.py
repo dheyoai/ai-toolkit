@@ -16,22 +16,8 @@ def create_request():
     return {
         "generation_id": "02b0db75-77f6-45e1-85c4-0ca2b1185ff3",
         "user_id": "aakashvarma",
-        "model_type": "qwen",
-        "model_path": "Qwen/Qwen-Image",
-        "cache_dir": "./cache",
-        "hf_lora_id": "DheyoAI/allu_arjun_and_alia_bhatt_1",
         "instruction": "A close-up portrait of (([A] man)) and (([AB] woman)) sitting together in a cozy cafe, warm ambient lighting, soft bokeh background, both facing the camera with gentle smiles",
-        "num_images_per_prompt": 1,
-        "num_inference_steps": 50,
-        "true_cfg_scale": 4.0,
-        "aspect_ratio": "16:9",
-        "seed": 42,
-        "dtype": "bf16",
-        "negative_prompt": "(((deformed))), blurry, over saturation, bad anatomy, disfigured, poorly drawn face, mutation, mutated, (extra_limb), (ugly), (poorly drawn hands), fused fingers, messy drawing, broken legs censor, censored, censor_bar, watermark",
-        "output_dir": "./outputs",
-        "cleanup_local": False,
-        "cleanup_cache": False,
-        "local_lora_config": False
+        "hf_lora_id": "DheyoAI/allu_arjun_and_alia_bhatt_1"
     }
 
 
@@ -126,9 +112,7 @@ def clear_queues(redis_processor, request_queue, response_queue):
 
 def validate_request(request):
     required_fields = [
-        "generation_id", "user_id", "model_type", "model_path", "instruction",
-        "num_images_per_prompt", "num_inference_steps", "true_cfg_scale",
-        "aspect_ratio", "seed", "dtype", "negative_prompt", "output_dir"
+        "generation_id", "user_id", "instruction", "hf_lora_id"
     ]
     
     missing_fields = [field for field in required_fields if field not in request]

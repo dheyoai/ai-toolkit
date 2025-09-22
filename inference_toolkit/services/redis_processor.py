@@ -13,16 +13,20 @@ class RedisProcessorError(Exception):
 
 class RequestSchema:
     REQUIRED_FIELDS = [
-        "generation_id", "user_id", "model_type", "model_path", "instruction",
-        "num_images_per_prompt", "num_inference_steps", "true_cfg_scale",
-        "aspect_ratio", "seed", "dtype", "negative_prompt", "output_dir"
+        "generation_id", "user_id", "instruction"
     ]
     
+    # LoRA configuration options (mutually exclusive)
+    LORA_CONFIG_SETS = {
+        "local_lora_paths": ["transformer_lora_path", "tokenizer_path", "embeddings_path", "token_abstraction_json_path"],
+        "hf_lora_id": ["hf_lora_id"],
+        "local_lora_directory": ["local_lora_directory"]
+    }
+    
     OPTIONAL_FIELDS = [
-        "hf_lora_id", "local_lora_directory", "local_lora_config",
-        "transformer_lora_path", "tokenizer_path", "embeddings_path", 
-        "token_abstraction_json_path", "cache_dir", "cleanup_local", 
-        "cleanup_cache", "prompts", "prompts_path"
+        "model_type", "model_path", "cache_dir", "cleanup_local", 
+        "cleanup_cache", "prompts", "prompts_path", "num_images_per_prompt", "num_inference_steps", "true_cfg_scale",
+        "aspect_ratio", "seed", "dtype", "negative_prompt", "output_dir"
     ]
     
     @staticmethod
@@ -30,22 +34,91 @@ class RequestSchema:
         if not isinstance(request_dict, dict):
             raise RedisProcessorError("Request must be a JSON object")
         
+        # Check required fields
         missing_fields = [field for field in RequestSchema.REQUIRED_FIELDS 
                          if field not in request_dict]
         if missing_fields:
             raise RedisProcessorError(f"Missing required fields: {missing_fields}")
         
+        # Validate LoRA configuration (exactly one set must be provided)
+        RequestSchema._validate_lora_config(request_dict)
+        
         validated = {}
-        for field in RequestSchema.REQUIRED_FIELDS + RequestSchema.OPTIONAL_FIELDS:
+        
+        # Add required fields
+        for field in RequestSchema.REQUIRED_FIELDS:
+            validated[field] = request_dict[field]
+        
+        # Add LoRA configuration fields
+        for config_set_name, fields in RequestSchema.LORA_CONFIG_SETS.items():
+            for field in fields:
+                if field in request_dict:
+                    validated[field] = request_dict[field]
+        
+        # Add optional fields
+        for field in RequestSchema.OPTIONAL_FIELDS:
             if field in request_dict:
                 validated[field] = request_dict[field]
         
+        # Apply defaults
+        # Model Configuration
+        validated.setdefault("model_type", "qwen")
+        validated.setdefault("model_path", "Qwen/Qwen-Image")
+        
+        # Generation Parameters
+        validated.setdefault("num_images_per_prompt", 1)
+        validated.setdefault("num_inference_steps", 50)
+        validated.setdefault("true_cfg_scale", 4.0)
+        validated.setdefault("aspect_ratio", "16:9")
+        validated.setdefault("seed", 42)
+        validated.setdefault("dtype", "bf16")
+        validated.setdefault("negative_prompt", "(((deformed))), blurry, over saturation, bad anatomy, disfigured, poorly drawn face, mutation, mutated, (extra_limb), (ugly), (poorly drawn hands), fused fingers, messy drawing, broken legs censor, censored, censor_bar, watermark")
+        
+        # Input/Output
+        validated.setdefault("prompts", None)
+        validated.setdefault("prompts_path", None)
+        validated.setdefault("output_dir", os.getenv("DEFAULT_OUTPUT_DIR", "./outputs"))
         validated.setdefault("cache_dir", os.getenv("DEFAULT_CACHE_DIR", "./cache"))
+        
+        # Cleanup Options
         validated.setdefault("cleanup_local", False)
         validated.setdefault("cleanup_cache", False)
-        validated.setdefault("local_lora_config", False)
         
         return validated
+    
+    @staticmethod
+    def _validate_lora_config(request_dict: Dict[str, Any]):
+        """Validate that exactly one LoRA configuration set is provided"""
+        provided_sets = []
+        
+        for config_set_name, fields in RequestSchema.LORA_CONFIG_SETS.items():
+            if config_set_name == "local_lora_paths":
+                # For local_lora_paths, all 4 fields must be present
+                if all(field in request_dict and request_dict[field] for field in fields):
+                    provided_sets.append(config_set_name)
+            else:
+                # For other sets, check if any field is present
+                if any(field in request_dict and request_dict[field] for field in fields):
+                    provided_sets.append(config_set_name)
+        
+        if len(provided_sets) == 0:
+            lora_options = [
+                "hf_lora_id",
+                "local_lora_directory", 
+                "all of: transformer_lora_path, tokenizer_path, embeddings_path, token_abstraction_json_path"
+            ]
+            raise RedisProcessorError(f"Exactly one LoRA configuration must be provided. Options: {lora_options}")
+        
+        if len(provided_sets) > 1:
+            raise RedisProcessorError(f"Multiple LoRA configurations provided: {provided_sets}. Only one is allowed.")
+        
+        # Additional validation for local_lora_paths
+        if "local_lora_paths" in provided_sets:
+            local_path_fields = RequestSchema.LORA_CONFIG_SETS["local_lora_paths"]
+            missing_local_fields = [field for field in local_path_fields 
+                                  if field not in request_dict or not request_dict[field]]
+            if missing_local_fields:
+                raise RedisProcessorError(f"When using local LoRA paths, all fields are required: {missing_local_fields} are missing")
 
 
 class RedisProcessor:
@@ -178,4 +251,3 @@ class RedisProcessor:
         except Exception as e:
             logger.error(f"Failed to clear queue {queue_name}: {str(e)}")
             return False
-            
