@@ -91,7 +91,8 @@ class JobOrchestrator:
                 "inference_steps": job_request.get("num_inference_steps", 50),
                 "aspect_ratio": job_request.get("aspect_ratio", "16:9"),
                 "seed": job_request.get("seed", 42),
-                "has_lora": bool(job_request.get("hf_lora_id") or job_request.get("local_lora_config")),
+                "has_lora": bool(job_request.get("hf_lora_id") or job_request.get("local_lora_directory") or 
+                               (job_request.get("transformer_lora_path") and job_request.get("tokenizer_path"))),
                 "cleanup_requested": {
                     "local": job_request.get("cleanup_local", False),
                     "cache": job_request.get("cleanup_cache", False)
@@ -145,7 +146,7 @@ class JobOrchestrator:
         
         finally:
             self._save_job_status(job_state)
-            self._push_response(job_state)
+            self._push_response(job_state, job_request)
     
     def _update_job_status(self, job_state: Dict[str, Any], status: JobStatus):
         job_state["status"] = status.value
@@ -322,22 +323,76 @@ class JobOrchestrator:
         except Exception as e:
             logger.error(f"Failed to save job status: {str(e)}")
     
-    def _push_response(self, job_state: Dict[str, Any]):
+    def _push_response(self, job_state: Dict[str, Any], job_request: Dict[str, Any]):
         try:
+            public_url = None
+            uploaded_files = job_state.get("uploaded_files", [])
+            if uploaded_files:
+                public_url = uploaded_files[0]
+            
+            model_info = job_request.get("model_path", "unknown")
+            if job_request.get("hf_lora_id"):
+                model_info = f"{model_info} + {job_request['hf_lora_id']}"
+            
+            generation_details = job_state["stages"]["generate"]["details"]
+            aspect_ratio = job_request.get("aspect_ratio", "16:9")
+            
+            aspect_ratios = {
+                "1:1": (1024, 1024), "16:9": (1664, 928), "9:16": (928, 1664),
+                "4:3": (1472, 1140), "3:4": (1140, 1472), "3:2": (1584, 1056), "2:3": (1056, 1584)
+            }
+            width, height = aspect_ratios.get(aspect_ratio, (1024, 1024))
+            
             response = {
                 "generation_id": job_state["job_id"],
-                "status": job_state["status"],
-                "success": job_state["success"],
-                "uploaded_files": job_state.get("uploaded_files", []),
-                "error_message": job_state.get("error_message"),
+                "status": "completed" if job_state["success"] else "failed",
                 "timestamp": job_state["updated_at"],
-                "processing_time": job_state.get("processing_time"),
-                "summary": {
-                    "files_generated": len(job_state.get("generated_files", [])),
-                    "files_uploaded": len(job_state.get("uploaded_files", [])),
-                    "stages_completed": sum(1 for stage in job_state["stages"].values() if stage["status"] == "completed")
+                "agent": "qwen_consumer",
+                "error_message": job_state.get("error_message"),
+                "public_url": public_url,
+                "external_id": job_state["job_id"],
+                "metadata": {
+                    "user_id": job_request.get("user_id"),
+                    "model": model_info,
+                    "prompt": job_request.get("instruction"),
+                    "generation_type": "text-to-image",
+                    "width": width,
+                    "height": height,
+                    "file_type": "image/png",
+                    "filename": f"generated_image_{job_state['job_id']}.png"
                 }
             }
+            
+            if job_state["success"]:
+                images = []
+                for i, url in enumerate(uploaded_files):
+                    images.append({
+                        "url": url,
+                        "content_type": "image/png",
+                        "file_size": None
+                    })
+                
+                response["response"] = {
+                    "request_id": job_state["job_id"],
+                    "status": "completed",
+                    "images": images,
+                    "metrics": {
+                        "duration": job_state.get("processing_time"),
+                        "seed": job_request.get("seed", 42),
+                        "steps": job_request.get("num_inference_steps", 50)
+                    }
+                }
+            else:
+                response["response"] = {
+                    "error": {
+                        "code": "GENERATION_FAILED",
+                        "message": job_state.get("error_message", "Unknown error occurred"),
+                        "details": {
+                            "error_stage": job_state.get("error_stage"),
+                            "processing_time": job_state.get("processing_time")
+                        }
+                    }
+                }
             
             self.redis_processor.push_response(self.response_queue, response)
             
