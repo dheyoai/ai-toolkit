@@ -232,7 +232,6 @@ class JobOrchestrator:
                 return [], []
             
             uploader = Uploader.create_uploader(self.uploader_type)
-            breakpoint()
             user_id = f"{job_request.get('user_id')}"
             
             upload_results = uploader.upload_generated_files(

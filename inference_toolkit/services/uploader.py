@@ -149,7 +149,7 @@ class S3Uploader:
                 ExtraArgs=extra_args
             )
             
-            s3_url = f"s3://{self.bucket_name}/{s3_key}"
+            s3_url = f"https://{self.bucket_name}.s3.amazonaws.com/{s3_key}"
             
             return {
                 'local_path': file_path,
