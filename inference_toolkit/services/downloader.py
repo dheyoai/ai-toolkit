@@ -11,21 +11,16 @@ class DownloadError(Exception):
 
 
 class Downloader:
-    def __init__(self, cache_dir: str = "./cache"):
-        self.cache_dir = Path(cache_dir)
-        try:
-            self.cache_dir.mkdir(parents=True, exist_ok=True)
-        except Exception as e:
-            raise DownloadError(f"Failed to create cache directory {cache_dir}: {str(e)}")
+    def __init__(self):
+        pass
     
     def download_all(self, job_request: Dict[str, str]) -> Dict[str, str]:
         try:
             self._validate_request(job_request)
             
             cache_dir = job_request.get("cache_dir", "./cache")
-            if cache_dir != str(self.cache_dir):
-                self.cache_dir = Path(cache_dir)
-                self.cache_dir.mkdir(parents=True, exist_ok=True)
+            self.cache_dir = Path(cache_dir)
+            self.cache_dir.mkdir(parents=True, exist_ok=True)
             
             model_paths = {}
             
@@ -35,6 +30,10 @@ class Downloader:
             if job_request.get("hf_lora_id"):
                 logger.info("Downloading HuggingFace LoRA bundle...")
                 lora_paths = self.download_lora_bundle(job_request["hf_lora_id"])
+                model_paths.update(lora_paths)
+            elif job_request.get("local_lora_directory"):
+                logger.info("Using local LoRA directory...")
+                lora_paths = self._get_lora_from_directory(job_request["local_lora_directory"])
                 model_paths.update(lora_paths)
             elif job_request.get("local_lora_config"):
                 logger.info("Using local LoRA configuration...")
@@ -63,6 +62,18 @@ class Downloader:
                 path = job_request[field]
                 if path and not Path(path).exists():
                     raise DownloadError(f"Local {field} path does not exist: {path}")
+        
+        if job_request.get("local_lora_directory"):
+            lora_dir = Path(job_request["local_lora_directory"])
+            if not lora_dir.exists():
+                raise DownloadError(f"Local LoRA directory does not exist: {lora_dir}")
+            if not lora_dir.is_dir():
+                raise DownloadError(f"Local LoRA path is not a directory: {lora_dir}")
+    
+    def _get_lora_from_directory(self, lora_directory: str) -> Dict[str, str]:
+        lora_dir = Path(lora_directory)
+        logger.info(f"Finding LoRA components in directory: {lora_dir}")
+        return self._find_lora_components(lora_dir)
     
     def _get_local_lora_paths(self, job_request: Dict[str, str]) -> Dict[str, str]:
         return {
@@ -133,41 +144,51 @@ class Downloader:
         try:
             components = {}
             
-            safetensors_files = list(lora_dir.glob("*.safetensors"))
-            if not safetensors_files:
-                raise DownloadError(f"No .safetensors files found in LoRA directory: {lora_dir}")
-            
-            for file in safetensors_files:
-                if any(keyword in file.name.lower() for keyword in ['lora', 'adapter']):
-                    components['lora_weights'] = str(file)
+            # Find tokenizer directory
+            tokenizer_found = False
+            for item in lora_dir.iterdir():
+                if item.is_dir() and "tokenizer" in item.name:
+                    components['tokenizer'] = str(item)
+                    logger.info(f"Found tokenizer: {item.name}")
+                    tokenizer_found = True
                     break
             
-            if 'lora_weights' not in components:
-                components['lora_weights'] = str(safetensors_files[0])
+            if not tokenizer_found:
+                raise DownloadError(f"Tokenizer directory not found in {lora_dir}")
             
-            if (lora_dir / "tokenizer.json").exists():
-                components['tokenizer'] = str(lora_dir)
+            # Find LoRA weights
+            lora_weights_found = False
+            for item in lora_dir.iterdir():
+                if item.is_file() and "LoRA" in item.name and item.suffix == ".safetensors":
+                    components['lora_weights'] = str(item)
+                    logger.info(f"Found LoRA weights: {item.name}")
+                    lora_weights_found = True
+                    break
+            
+            if not lora_weights_found:
+                raise DownloadError(f"LoRA weights file (containing 'LoRA' and ending with '.safetensors') not found in {lora_dir}")
+            
+            # Find embeddings
+            embeddings_found = False
+            for item in lora_dir.iterdir():
+                if item.is_file() and "embeddings" in item.name and item.suffix == ".safetensors":
+                    components['embeddings'] = str(item)
+                    logger.info(f"Found embeddings: {item.name}")
+                    embeddings_found = True
+                    break
+            
+            if not embeddings_found:
+                raise DownloadError(f"Embeddings file (containing 'embeddings' and ending with '.safetensors') not found in {lora_dir}")
+            
+            # Find token mapping
+            tokens_file = lora_dir / "tokens.json"
+            if tokens_file.exists():
+                components['token_mapping'] = str(tokens_file)
+                logger.info(f"Found token mapping: tokens.json")
             else:
-                tokenizer_dirs = [d for d in lora_dir.iterdir() 
-                                if d.is_dir() and "tokenizer" in d.name.lower()]
-                if tokenizer_dirs:
-                    components['tokenizer'] = str(tokenizer_dirs[0])
+                raise DownloadError(f"Token mapping file 'tokens.json' not found in {lora_dir}")
             
-            for file in safetensors_files:
-                if any(keyword in file.name.lower() for keyword in ['embedding', 'emb']):
-                    components['embeddings'] = str(file)
-                    break
-            
-            json_files = list(lora_dir.glob("*.json"))
-            for file in json_files:
-                if any(keyword in file.name.lower() for keyword in ['token', 'mapping', 'abstraction']):
-                    components['token_mapping'] = str(file)
-                    break
-            
-            if not components:
-                raise DownloadError(f"No valid LoRA components found in directory: {lora_dir}")
-            
-            logger.info(f"Found LoRA components: {list(components.keys())}")
+            logger.info(f"Found all LoRA components: {list(components.keys())}")
             return components
             
         except Exception as e:
