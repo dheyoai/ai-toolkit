@@ -188,3 +188,10 @@ test.py
 tokens.json 
 tokens_3.json
 aitool
+dumps.md
+rep.py 
+inferenced_images 
+prompts
+my_configs
+data_augmentation.py
+gradio_output_images
