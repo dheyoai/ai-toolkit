@@ -34,3 +34,4 @@ opencv-python
 einops
 accelerate
 omegaconf
+redis

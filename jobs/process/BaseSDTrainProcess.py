@@ -434,7 +434,7 @@ class BaseSDTrainProcess(BaseTrainProcess):
         # pt_files = [f for f in items if f.endswith('.pt')]
         # directories = [d for d in items if os.path.isdir(d) and not d.endswith('.safetensors')]
         embed_files = []
-        tokenizer_dirs = glob.glob(os.path.join(self.save_root, "tokenizer_*"))
+        # tokenizer_dirs = glob.glob(os.path.join(self.save_root, "tokenizer_*"))
         text_encoder_dirs = glob.glob(os.path.join(self.save_root, "text_encoder_*"))
 
         # critic_items = []
@@ -443,7 +443,7 @@ class BaseSDTrainProcess(BaseTrainProcess):
         if self.embed_config is not None:
             embed_pattern =  self.embed_config[0].trigger[:-1]
             embed_pattern = f"{embed_pattern}*"
-            print(embed_pattern)
+            # print(embed_pattern)
             embed_items = glob.glob(os.path.join(self.save_root, embed_pattern))
             embed_files = [f for f in embed_items if f.endswith('.safetensors') or f.endswith('.pt')]
 
@@ -453,7 +453,7 @@ class BaseSDTrainProcess(BaseTrainProcess):
 
         # Combine all items
         # combined_items = safetensors_files + pt_files + directories + embed_files + critic_items
-        combined_items = safetensors_files + embed_files + text_encoder_dirs + tokenizer_dirs
+        combined_items = safetensors_files + embed_files + text_encoder_dirs 
 
         # Filter items to remove (those not matching best steps)
         items_to_remove, steps_to_remove = [], []
@@ -609,17 +609,18 @@ class BaseSDTrainProcess(BaseTrainProcess):
 
         # self.sd.tokenizer.save_pretrained(os.path.join(self.save_root, f'tokenizer_{self.job.name}_{step_num}'))
         if self.embedding is not None:
-            if isinstance(self.sd.tokenizer, List):
-                for idx, tokenizer in enumerate(self.sd.tokenizer):
-                    tokenizer.save_pretrained(os.path.join(self.save_root, f'tokenizer_{idx}_{self.job.name}_{step_num}'))
-            else:
-                self.sd.tokenizer.save_pretrained(os.path.join(self.save_root, f'tokenizer_{self.job.name}_{step_num}'))
+            if not any(d.startswith("tokenizer") for d in os.listdir(self.save_root) if os.path.isdir(os.path.join(self.save_root, d))):
+                if isinstance(self.sd.tokenizer, List):
+                    for idx, tokenizer in enumerate(self.sd.tokenizer):
+                        tokenizer.save_pretrained(os.path.join(self.save_root, f'tokenizer_{idx}_{self.job.name}'))
+                else:
+                    self.sd.tokenizer.save_pretrained(os.path.join(self.save_root, f'tokenizer_{self.job.name}'))
 
-            if isinstance(self.sd.text_encoder, List):
-                for idx, text_encoder in enumerate(self.sd.text_encoder):
-                    text_encoder.save_pretrained(os.path.join(self.save_root, f'text_encoder_{idx}_{self.job.name}_{step_num}'))
-            else:
-                self.sd.text_encoder.save_pretrained(os.path.join(self.save_root, f'text_encoder_{self.job.name}_{step_num}'))
+            # if isinstance(self.sd.text_encoder, List):
+            #     for idx, text_encoder in enumerate(self.sd.text_encoder):
+            #         text_encoder.save_pretrained(os.path.join(self.save_root, f'text_encoder_{idx}_{self.job.name}_{step_num}'))
+            # else:
+            #     self.sd.text_encoder.save_pretrained(os.path.join(self.save_root, f'text_encoder_{self.job.name}_{step_num}'))
 
 
         self.update_training_metadata()
@@ -663,7 +664,7 @@ class BaseSDTrainProcess(BaseTrainProcess):
             if self.embedding is not None:
                 embed_pattern = "".join([self.embed_config[i].trigger for i in range(len(self.embed_config))])
                 # embed_pattern = f"{embed_pattern}_*"
-                emb_filename = f'{embed_pattern}{step_num}.safetensors'
+                emb_filename = f'{embed_pattern}_embeddings{step_num}.safetensors'
                 emb_file_path = os.path.join(self.save_root, emb_filename)
                 # for combo, above will get it
                 # set current step
@@ -1666,6 +1667,17 @@ class BaseSDTrainProcess(BaseTrainProcess):
         flush()
         self.done_hook()
 
+        min_loss, best_step = min(self.loss_and_step_list, key=lambda x: x[0])
+        best_step_str = str(best_step)
+
+        for fname in os.listdir(self.save_root):
+            name, ext = os.path.splitext(fname)
+            if name.endswith(best_step_str):
+                old_path = os.path.join(self.save_root, fname)
+                new_path = os.path.join(self.save_root, f"{name}_best{ext}")
+                os.rename(old_path, new_path)
+                print(f"Renamed {fname} -> {fname}_best{ext}")
+
 
     def run(self):
         # torch.autograd.set_detect_anomaly(True)
@@ -2307,9 +2319,6 @@ class BaseSDTrainProcess(BaseTrainProcess):
                     batch_list.append(batch)
                     batch_step += 1
 
-                # if self.accelerator.is_main_process:
-                #     import pdb; pdb.set_trace()
-                # batch_list = batch_list[0]
                 # if self.epoch_num == 0:
                 #     self.save_preprocessed_images(batch_list)
 

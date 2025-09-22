@@ -11,6 +11,8 @@ import os
 from typing import List
 import time 
 import shutil
+from callbacks import make_callback
+
 ## Assume that the LoRAs are trained on distinct subjects and no two TI-LoRA tokenizers containing the same added tokens (for now) 😭
 
 
@@ -31,7 +33,7 @@ CUDA_VISIBLE_DEVICES=1 python3 tilora_merge.py --model_path "Qwen/Qwen-Image" \
 --num_images_per_prompt 2 
 """
 
-
+switch_callback = None
 
 def parse_args() -> argparse.Namespace:
     """Parse command line arguments."""
@@ -73,6 +75,20 @@ def parse_args() -> argparse.Namespace:
         # required=True,
         default=None,
         help="Path to token abstraction dict",
+    )
+    parser.add_argument(
+        "--lora_composition_method",
+        type=str,
+        # required=True,
+        default="merge",
+        help="Merge or Switch?",
+    )
+    parser.add_argument(
+        "--switch_step",
+        type=int,
+        # required=True,
+        default=5,
+        help="Number of timesteps after which LoRA weights have to be changed. Only relevant when switch composition is used",
     )
     parser.add_argument(
         "--transformer_lora_path_list",
@@ -183,8 +199,6 @@ def convert_lora_weights_before_load(args:argparse.Namespace, state_dict, new_pa
     save_file(new_sd, f"{new_path}")
     return new_sd
 
-
-
 def load_pipeline (args:argparse.Namespace):
     # Load the pipeline
     if torch.cuda.is_available():
@@ -219,7 +233,19 @@ def load_pipeline (args:argparse.Namespace):
         pipe.load_lora_weights(dir_path, weight_name=cleaned_safetensors_file, adapter_name=args.adapter_names_list[i])
 
 
-    pipe.set_adapters(args.adapter_names_list)
+    global switch_callback
+
+    method = args.lora_composition_method
+
+    if method == "merge":
+        pipe.set_adapters(args.adapter_names_list)
+        switch_callback = None
+    elif method == "switch":
+        pipe.set_adapters([args.adapter_names_list[0]])
+        print(f"\n\nSet {args.adapter_names_list[0]} LoRA\n\n")
+        switch_callback = make_callback(switch_step=args.switch_step, loras=args.adapter_names_list)
+
+    # pipe.set_adapters(args.adapter_names_list)
     # deal with tokenizers and text encoder here
     new_tokenizer_config_map = {}
     new_added_tokens_map = {}
@@ -324,7 +350,8 @@ def main (args:argparse.Namespace, prompts: List) -> None:
             height=height,
             num_inference_steps=args.num_inference_steps,
             true_cfg_scale=args.true_cfg_scale,
-            generator=torch.Generator(device="cuda").manual_seed(args.seed)
+            generator=torch.Generator(device="cuda").manual_seed(args.seed),
+            callback_on_step_end=switch_callback,
         ).images
 
         os.makedirs(os.path.dirname(args.output_image_path), exist_ok=True)
