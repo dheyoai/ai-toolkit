@@ -1,6 +1,6 @@
 import uuid
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Dict, Any, Optional, List
@@ -69,8 +69,8 @@ class JobOrchestrator:
             "job_id": job_id,
             "job_number": job_number,
             "status": JobStatus.CREATED.value,
-            "created_at": datetime.now().isoformat(),
-            "updated_at": datetime.now().isoformat(),
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
             "success": False,
             "stages": {
                 "download": {"status": "pending", "start_time": None, "end_time": None, "error": None, "details": {}},
@@ -100,7 +100,7 @@ class JobOrchestrator:
             }
         }
         
-        start_time = datetime.now()
+        start_time = datetime.now(timezone.utc)
         
         try:
             logger.info(f"Processing job #{job_number} with ID: {job_id}")
@@ -117,7 +117,7 @@ class JobOrchestrator:
             self._update_job_status(job_state, JobStatus.CLEANING)
             self._cleanup_stage(job_request, generated_files, job_state)
             
-            processing_time = (datetime.now() - start_time).total_seconds()
+            processing_time = (datetime.now(timezone.utc) - start_time).total_seconds()
             
             job_state.update({
                 "status": JobStatus.COMPLETED.value,
@@ -126,13 +126,13 @@ class JobOrchestrator:
                 "uploaded_files": uploaded_files,
                 "upload_details": upload_details,
                 "processing_time": round(processing_time, 2),
-                "updated_at": datetime.now().isoformat()
+                "updated_at": datetime.now(timezone.utc).isoformat()
             })
             
             logger.info(f"Job #{job_number} completed successfully in {processing_time:.2f}s")
             
         except Exception as e:
-            processing_time = (datetime.now() - start_time).total_seconds()
+            processing_time = (datetime.now(timezone.utc) - start_time).total_seconds()
             error_msg = str(e)
             logger.error(f"Job #{job_number} failed after {processing_time:.2f}s: {error_msg}")
             
@@ -141,7 +141,7 @@ class JobOrchestrator:
                 "error_message": error_msg,
                 "error_stage": job_state["status"],
                 "processing_time": round(processing_time, 2),
-                "updated_at": datetime.now().isoformat()
+                "updated_at": datetime.now(timezone.utc).isoformat()
             })
         
         finally:
@@ -150,12 +150,12 @@ class JobOrchestrator:
     
     def _update_job_status(self, job_state: Dict[str, Any], status: JobStatus):
         job_state["status"] = status.value
-        job_state["updated_at"] = datetime.now().isoformat()
+        job_state["updated_at"] = datetime.now(timezone.utc).isoformat()
         logger.info(f"Job {job_state['job_id']} status: {status.value}")
     
     def _download_stage(self, job_request: Dict[str, Any], job_state: Dict[str, Any]) -> Dict[str, str]:
         stage = job_state["stages"]["download"]
-        stage["start_time"] = datetime.now().isoformat()
+        stage["start_time"] = datetime.now(timezone.utc).isoformat()
         stage["status"] = "running"
         
         try:
@@ -164,7 +164,7 @@ class JobOrchestrator:
             
             stage.update({
                 "status": "completed",
-                "end_time": datetime.now().isoformat(),
+                "end_time": datetime.now(timezone.utc).isoformat(),
                 "details": {
                     "components_downloaded": list(model_paths.keys()),
                     "model_path": model_paths.get("model"),
@@ -180,14 +180,14 @@ class JobOrchestrator:
         except Exception as e:
             stage.update({
                 "status": "failed",
-                "end_time": datetime.now().isoformat(),
+                "end_time": datetime.now(timezone.utc).isoformat(),
                 "error": str(e)
             })
             raise
     
     def _generate_stage(self, job_request: Dict[str, Any], model_paths: Dict[str, str], job_state: Dict[str, Any]) -> List[str]:
         stage = job_state["stages"]["generate"]
-        stage["start_time"] = datetime.now().isoformat()
+        stage["start_time"] = datetime.now(timezone.utc).isoformat()
         stage["status"] = "running"
         
         try:
@@ -196,7 +196,7 @@ class JobOrchestrator:
             
             stage.update({
                 "status": "completed",
-                "end_time": datetime.now().isoformat(),
+                "end_time": datetime.now(timezone.utc).isoformat(),
                 "details": {
                     "files_generated": len(generated_files),
                     "images_per_prompt": job_request.get("num_images_per_prompt", 1),
@@ -212,26 +212,27 @@ class JobOrchestrator:
         except Exception as e:
             stage.update({
                 "status": "failed",
-                "end_time": datetime.now().isoformat(),
+                "end_time": datetime.now(timezone.utc).isoformat(),
                 "error": str(e)
             })
             raise
     
     def _upload_stage(self, job_request: Dict[str, Any], generated_files: List[str], job_id: str, job_state: Dict[str, Any]) -> tuple:
         stage = job_state["stages"]["upload"]
-        stage["start_time"] = datetime.now().isoformat()
+        stage["start_time"] = datetime.now(timezone.utc).isoformat()
         stage["status"] = "running"
         
         try:
             if not generated_files:
                 stage.update({
                     "status": "skipped",
-                    "end_time": datetime.now().isoformat(),
+                    "end_time": datetime.now(timezone.utc).isoformat(),
                     "details": {"reason": "no_files_to_upload"}
                 })
                 return [], []
             
             uploader = Uploader.create_uploader(self.uploader_type)
+            breakpoint()
             user_id = f"{job_request.get('user_id')}"
             
             upload_results = uploader.upload_generated_files(
@@ -246,7 +247,7 @@ class JobOrchestrator:
             
             stage.update({
                 "status": "completed",
-                "end_time": datetime.now().isoformat(),
+                "end_time": datetime.now(timezone.utc).isoformat(),
                 "details": {
                     "total_files": len(generated_files),
                     "successful_uploads": len(successful_uploads),
@@ -264,14 +265,14 @@ class JobOrchestrator:
         except Exception as e:
             stage.update({
                 "status": "failed",
-                "end_time": datetime.now().isoformat(),
+                "end_time": datetime.now(timezone.utc).isoformat(),
                 "error": str(e)
             })
             raise
     
     def _cleanup_stage(self, job_request: Dict[str, Any], generated_files: List[str], job_state: Dict[str, Any]):
         stage = job_state["stages"]["cleanup"]
-        stage["start_time"] = datetime.now().isoformat()
+        stage["start_time"] = datetime.now(timezone.utc).isoformat()
         stage["status"] = "running"
         
         try:
@@ -281,7 +282,7 @@ class JobOrchestrator:
             if not cleanup_local and not cleanup_cache:
                 stage.update({
                     "status": "skipped",
-                    "end_time": datetime.now().isoformat(),
+                    "end_time": datetime.now(timezone.utc).isoformat(),
                     "details": {"reason": "cleanup_not_requested"}
                 })
                 return
@@ -291,7 +292,7 @@ class JobOrchestrator:
             
             stage.update({
                 "status": "completed",
-                "end_time": datetime.now().isoformat(),
+                "end_time": datetime.now(timezone.utc).isoformat(),
                 "details": {
                     "cleanup_local": cleanup_local,
                     "cleanup_cache": cleanup_cache,
@@ -304,7 +305,7 @@ class JobOrchestrator:
         except Exception as e:
             stage.update({
                 "status": "failed",
-                "end_time": datetime.now().isoformat(),
+                "end_time": datetime.now(timezone.utc).isoformat(),
                 "error": str(e)
             })
             logger.warning(f"Cleanup failed (non-critical): {str(e)}")
