@@ -320,6 +320,7 @@ class TrainConfig:
     def __init__(self, **kwargs):
         self.enable_ti = kwargs.get('enable_ti', False)
         self.enable_ttb = kwargs.get('enable_ti', False)
+        self.enable_mixed_batching = kwargs.get('enable_mixed_batching', False)
         self.early_stopping_num_epochs = kwargs.get('early_stopping_num_epochs', 30)
         self.noise_scheduler = kwargs.get('noise_scheduler', 'ddpm')
         self.content_or_style: ContentOrStyleType = kwargs.get('content_or_style', 'balanced')
