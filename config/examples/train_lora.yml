@@ -1,10 +1,10 @@
 job: extension
 config:
-  name: lora_ab_base
+  name: lora_trial3
   process:
   - type: sd_trainer
     training_folder: /dheyo/varunika/output
-    log_dir: /dheyo/varunika/output/lora_ab_base/tensorboard
+    log_dir: /dheyo/varunika/output/lora_trial3/tensorboard
     device: cuda
     trigger_word: null
     performance_log_every: 10
@@ -102,5 +102,5 @@ config:
       num_frames: 1
       fps: 1
 meta:
-  name: lora_ab_base
+  name: lora_trial3
   version: '1.0'

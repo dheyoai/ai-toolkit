@@ -1,96 +1,72 @@
-from diffusers import DiffusionPipeline
 import torch
-from safetensors.torch import load_file # Removed save_file as it's not used here anymore
-from transformers import AutoTokenizer 
-from transformers import Qwen2_5_VLModel as TextEncoder
+from diffusers import QwenImagePipeline
+from transformers import AutoTokenizer, Qwen2VLForConditionalGeneration
+from safetensors.torch import load_file
 import json
-from diffusers import QwenImagePipeline, QwenImageTransformer2DModel, AutoencoderKLQwenImage
 import argparse
 from pathlib import Path
 import os
-from typing import List, Optional
-import time 
-import re # Added for parsing step number from paths
+import time
+import re
+from typing import List
 
 def parse_args() -> argparse.Namespace:
     """Parse command line arguments."""
-    parser = argparse.ArgumentParser(description="Qwen-Image image generation script.")
+    parser = argparse.ArgumentParser(description="Qwen-Image image generation with safetensors LoRA and Textual Inversion.")
     parser.add_argument(
-        "--model_path", # "Qwen/Qwen-Image"
+        "--model_path",
         type=str,
         required=True,
-        help="Path to base model checkpoint.",
+        help="Path to base Qwen-Image model checkpoint (e.g., 'Qwen/Qwen-Image').",
     )
     parser.add_argument(
-        "--tokenizer_path", # /dheyo/varunika/output/ab_qwenimage/tokenizer_0_ab_qwenimage__000004895
-        type=str,
-        default=None,
-        help="Path to updated tokenizer (required for TI).",
-    )
-    parser.add_argument(
-        "--text_encoder_path", # /dheyo/varunika/output/ab_qwenimage/text_encoder_0_ab_qwenimage__000004895
-        type=str,
-        default=None,
-        help="Path to text encoder checkpoint (required for TI).",
-    )
-    parser.add_argument(
-        "--embedding_path", # e.g., /dheyo/varunika/output/ab_qwenimage/[AB]_000004895.safetensors
-        type=str,
-        default=None,
-        help="Path to Textual Inversion embedding .safetensors file (e.g., for [AB] token).",
-    )
-    
-    # --- New arguments for AdaLoRA support ---
-    parser.add_argument(
-        "--network_type",
+        "--lora_type",
         type=str,
         default="lora",
-        choices=["lora", "adalora"], # Add other types if needed, but these are the relevant ones for loading
-        help="Type of network to load (lora or adalora).",
+        choices=["lora"],
+        help="Type of LoRA to load: 'lora' for safetensors weights.",
     )
     parser.add_argument(
-        "--adalora_unet_adapter_path",
+        "--lora_path",
         type=str,
         default=None,
-        help="Path to UNet AdaLoRA adapter directory (e.g., job_name_unet_adalora_adapter_XXXXX/).",
+        help="Path to the LoRA .safetensors file.",
     )
     parser.add_argument(
-        "--adalora_te_adapter_paths",
-        type=str, # Comma-separated list of paths
-        default=None,
-        help="Comma-separated paths to Text Encoder AdaLoRA adapter directories (e.g., job_name_te0_adalora_adapter_XXXXX/,job_name_te1_adalora_adapter_XXXXX/).",
-    )
-    parser.add_argument(
-        "--full_train_layers_path",
+        "--tokenizer_path",
         type=str,
         default=None,
-        help="Path to .safetensors file for full_train_in_out layers (if trained with AdaLoRA).",
+        help="Path to updated tokenizer.",
     )
-    # --- End new arguments for AdaLoRA support ---
-
     parser.add_argument(
-        "--transformer_lora_path", # This will be for traditional LoRA, not AdaLoRA
+        "--text_encoder_path",
         type=str,
         default=None,
-        help="Path to transformer LoRA .safetensors checkpoint (for traditional LoRA).",
+        help="Path to text encoder checkpoint.",
+    )
+    parser.add_argument(
+        "--token_abstraction_json_path",
+        type=str,
+        default=None,
+        help="Path to token abstraction dict (e.g., 'tokens.json').",
     )
     parser.add_argument(
         "--num_inference_steps",
         type=int,
-        default=50,
+        default=30,
         help="Number of inference steps."
     )
     parser.add_argument(
         "--seed",
         type=int,
-        default=42,
+        default=12345,
         help="Random seed for generation."
     )
     parser.add_argument(
         "--dtype",
         type=str,
-        default='bf16',
-        choices=['fp32', 'fp16', 'bf16'],
+        default="bf16",
+        choices=["fp32", "fp16", "bf16"],
         help="Data type for model weights."
     )
     parser.add_argument(
@@ -115,7 +91,7 @@ def parse_args() -> argparse.Namespace:
         "--output_image_path",
         type=str,
         default="output.png",
-        help="Path to save output image."
+        help="Base path for saving output images."
     )
     parser.add_argument(
         "--num_images_per_prompt",
@@ -127,246 +103,197 @@ def parse_args() -> argparse.Namespace:
         "--prompts_path",
         type=str,
         default=None,
-        help="Path to prompts.txt for bulk generation",
+        help="Path to a .txt file containing prompts for bulk generation."
     )
     parser.add_argument(
         "--aspect_ratio",
         type=str,
         default="16:9",
-        help="""
-            aspect_ratios = {
-                "1:1": (1024, 1024),
-                "16:9": (1664, 928),
-                "9:16": (928, 1664),
-                "4:3": (1472, 1140),
-                "3:4": (1140, 1472),
-                "3:2": (1584, 1056),
-                "2:3": (1056, 1584),
-            }
-        """,
+        help="Supported aspect ratios: '1:1': (1024, 1024), '16:9': (1664, 928), '9:16': (928, 1664), "
+             "'4:3': (1472, 1140), '3:4': (1140, 1472), '3:2': (1584, 1056), '2:3': (1056, 1584).",
     )
-    # The --token_abstraction_json_path is explicitly removed as it's no longer used for prompt replacement
-    # for TI embeddings. It can be kept for other purposes if necessary, but for now it's removed
-    # from the arguments to avoid confusion.
-
-
     return parser.parse_args()
 
-
-# The function convert_lora_weights_before_load is entirely removed
-# as it was a workaround for a previous saving/loading issue and is
-# not compatible with the new AdaLoRA saving mechanism or the standard
-# diffusers LoRA loading.
-
-
-def load_pipeline (args:argparse.Namespace):
-    # Load the pipeline
-    if torch.cuda.is_available():
-        torch_dtype = torch.bfloat16 if args.dtype == "bf16" else torch.float32
-        device = "cuda"
-    else:
-        torch_dtype = torch.float32
-        device = "cpu"
+def remap_qwen_lora_keys_for_pipeline(state_dict: dict) -> dict:
+    """
+    Remaps LoRA keys to match QwenImagePipeline's transformer module expectations.
+    """
+    remapped_sd = {}
+    print("Original state_dict keys:")
+    for key in state_dict.keys():
+        print(key)
     
-    pipe = QwenImagePipeline.from_pretrained(args.model_path, torch_dtype=torch_dtype)
-    pipe = pipe.to(device)
-
-    # --- Loading custom tokenizer and text encoder (required for TI) ---
-    if args.tokenizer_path and args.text_encoder_path:
-        print(f"Loading custom tokenizer from: {args.tokenizer_path}")
-        tokenizer = AutoTokenizer.from_pretrained(args.tokenizer_path)
-        print(f"Loading custom text encoder from: {args.text_encoder_path}")
-        text_encoder = TextEncoder.from_pretrained(args.text_encoder_path,
-                                                ignore_mismatched_sizes=True,
-                                                torch_dtype=torch_dtype).to(device)
-        text_encoder.resize_token_embeddings(len(tokenizer))
-        pipe.tokenizer = tokenizer
-        pipe.text_encoder = text_encoder 
-    else:
-        if args.embedding_path:
-            print("Warning: Embedding path provided, but custom tokenizer/text_encoder paths are missing. "
-                  "Textual Inversion embeddings may not load correctly or be recognized.")
-    # --- End loading custom tokenizer and text encoder ---
-
-    # --- Load Textual Inversion Embedding ---
-    if args.embedding_path:
-        print(f"Loading Textual Inversion embedding from: {args.embedding_path}")
-        # The embedding_path likely points to a .safetensors file like '[AB]_000004895.safetensors'
-        # This file contains the 'emb_params' which are the learned vectors for the TI token.
-        try:
-            embedding_sd = load_file(args.embedding_path)
-            # Assuming the embedding_sd contains a single key (e.g., '[AB]') mapping to the embedding tensor.
-            # And pipe.tokenizer and pipe.text_encoder are already set up.
-            if hasattr(pipe, 'load_textual_inversion') and callable(pipe.load_textual_inversion):
-                # Diffusers has a dedicated method for this, use it if available
-                # It typically takes the folder or a specific file for the token
-                # This assumes the TI embedding is saved in a compatible format for this method.
-                pipe.load_textual_inversion(args.embedding_path)
-                print(f"Successfully loaded Textual Inversion from {args.embedding_path} using pipe.load_textual_inversion.")
-            else:
-                # Manual injection for older/custom pipelines
-                for token, embedding_tensor in embedding_sd.items():
-                    # The token might be enclosed in '[]' or not, handle both
-                    clean_token = token.strip('[]') if token.startswith('[') and token.endswith(']') else token
-                    # Find the token ID in the (potentially resized) tokenizer
-                    token_ids = pipe.tokenizer.encode(clean_token, add_special_tokens=False)
-                    if len(token_ids) == 1:
-                        token_id = token_ids[0]
-                        if token_id != pipe.tokenizer.unk_token_id:
-                            # Assuming embedding_tensor is directly the learned vector
-                            if embedding_tensor.dim() == 1: # If it's just the vector
-                                pipe.text_encoder.embeddings.word_embeddings.weight.data[token_id] = embedding_tensor.to(torch_dtype).to(device)
-                                print(f"Manually injected Textual Inversion embedding for '{clean_token}' (ID: {token_id}).")
-                            elif embedding_tensor.dim() == 2 and embedding_tensor.shape[0] == 1: # If it's a 1-item batch
-                                pipe.text_encoder.embeddings.word_embeddings.weight.data[token_id] = embedding_tensor.squeeze(0).to(torch_dtype).to(device)
-                                print(f"Manually injected Textual Inversion embedding for '{clean_token}' (ID: {token_id}).")
-                            else:
-                                print(f"Warning: TI embedding for '{clean_token}' has unexpected shape {embedding_tensor.shape}. Skipping manual injection.")
-                        else:
-                            print(f"Warning: TI token '{clean_token}' not found in tokenizer vocabulary. Skipping manual injection.")
-                    else:
-                        print(f"Warning: TI token '{clean_token}' maps to multiple or zero token IDs. Skipping manual injection.")
-        except Exception as e:
-            print(f"Error loading Textual Inversion embedding from {args.embedding_path}: {e}")
-    # --- End load Textual Inversion Embedding ---
-
-    # --- Load Network Weights (AdaLoRA or traditional LoRA) ---
-    if args.network_type.lower() == "adalora":
-        print("Loading AdaLoRA network...")
+    LORA_SUFFIX_REGEX = re.compile(r"(\.lora_down|\.lora_up)\.(weight)$")
+    
+    for original_key, value in state_dict.items():
+        print(f"\nProcessing key: {original_key}")
+        match = LORA_SUFFIX_REGEX.search(original_key)
+        if not match:
+            print(f"Skipping non-LoRA key: {original_key}")
+            continue
         
-        # Load UNet AdaLoRA adapter
-        if args.adalora_unet_adapter_path and os.path.isdir(args.adalora_unet_adapter_path):
-            print(f"Loading UNet AdaLoRA adapter from: {args.adalora_unet_adapter_path}")
-            # The adapter_name here is internal to diffusers/peft for managing multiple adapters.
-            # You might need to derive it from your training setup.
-            # For simplicity, we'll use a generic name, but for multiple adapters, ensure uniqueness.
-            pipe.load_lora_weights(args.adalora_unet_adapter_path, adapter_name="adalora_unet")
-        else:
-            if args.adalora_unet_adapter_path:
-                print(f"Warning: UNet AdaLoRA adapter path {args.adalora_unet_adapter_path} not found or is not a directory. Skipping.")
+        base_module_name = original_key[:match.start()]
+        lora_suffix = original_key[match.start():]
+        print(f"Base: {base_module_name}, Suffix: {lora_suffix}")
+        
+        # Remove 'transformer.' prefix to match 'transformer_blocks.<block_id>.<module>'
+        if base_module_name.startswith("transformer.transformer_blocks."):
+            base_module_name = base_module_name.replace("transformer.transformer_blocks.", "transformer_blocks.")
+            print(f"Remapped prefix to: {base_module_name}")
+        
+        final_remapped_key = base_module_name + lora_suffix
+        print(f"Final remapped key: {final_remapped_key}")
+        remapped_sd[final_remapped_key] = value
+    
+    print("\nRemapped state_dict keys:")
+    for key in remapped_sd.keys():
+        print(key)
+    
+    if not remapped_sd:
+        print("Warning: No LoRA modules remained after remapping. The LoRA checkpoint might be incompatible or empty.")
+    
+    return remapped_sd
 
-        # Load Text Encoder AdaLoRA adapters
-        if args.adalora_te_adapter_paths:
-            te_adapter_paths = [p.strip() for p in args.adalora_te_adapter_paths.split(',') if p.strip()]
-            for i, te_path in enumerate(te_adapter_paths):
-                if os.path.isdir(te_path):
-                    print(f"Loading Text Encoder {i} AdaLoRA adapter from: {te_path}")
-                    pipe.load_lora_weights(te_path, adapter_name=f"adalora_te_{i}")
-                else:
-                    print(f"Warning: Text Encoder {i} AdaLoRA adapter path {te_path} not found or is not a directory. Skipping.")
-
-        # Load full_train_in_out layers if available
-        if args.full_train_layers_path and os.path.exists(args.full_train_layers_path):
-            print(f"Loading full_train_in_out layers from: {args.full_train_layers_path}")
-            full_train_sd = load_file(args.full_train_layers_path)
+def load_pipeline(args: argparse.Namespace):
+    """Load the QwenImagePipeline with safetensors LoRA and updated tokenizer/text encoder."""
+    torch_dtype = torch.bfloat16 if args.dtype == "bf16" else torch.float32
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    
+    print(f"Loading base pipeline from {args.model_path} on {device} with dtype {torch_dtype}...")
+    try:
+        pipe = QwenImagePipeline.from_pretrained(args.model_path, torch_dtype=torch_dtype)
+        pipe = pipe.to(device)
+    except Exception as e:
+        print(f"Error loading base pipeline: {e}")
+        raise
+    
+    lora_loaded = False
+    if args.lora_type == "lora" and args.lora_path and Path(args.lora_path).is_file():
+        print(f"Loading safetensors LoRA weights from {args.lora_path}")
+        try:
+            state_dict = load_file(args.lora_path, device="cpu")
+            if "emb_params" in state_dict:
+                print("Found Textual Inversion embeddings in LoRA checkpoint; skipping for transformer LoRA.")
+                state_dict.pop("emb_params")
             
-            # Apply state_dict to the corresponding base modules in the pipeline
-            # The keys might be prefixed (e.g., 'unet_conv_in.weight')
-            if hasattr(pipe.unet, 'conv_in') and any(k.startswith('unet_conv_in.') for k in full_train_sd.keys()):
-                pipe.unet.conv_in.load_state_dict({k.replace('unet_conv_in.', ''): v for k, v in full_train_sd.items() if k.startswith('unet_conv_in.')})
-                print("Loaded UNet conv_in layers.")
-            if hasattr(pipe.unet, 'conv_out') and any(k.startswith('unet_conv_out.') for k in full_train_sd.keys()):
-                pipe.unet.conv_out.load_state_dict({k.replace('unet_conv_out.', ''): v for k, v in full_train_sd.items() if k.startswith('unet_conv_out.')})
-                print("Loaded UNet conv_out layers.")
-            # For Qwen-Image's transformer blocks, it might have pos_embed or proj_out directly
-            if hasattr(pipe.unet, 'pos_embed') and any(k.startswith('transformer_pos_embed.') for k in full_train_sd.keys()):
-                pipe.unet.pos_embed.load_state_dict({k.replace('transformer_pos_embed.', ''): v for k, v in full_train_sd.items() if k.startswith('transformer_pos_embed.')})
-                print("Loaded Transformer pos_embed layers.")
-            if hasattr(pipe.unet, 'proj_out') and any(k.startswith('transformer_proj_out.') for k in full_train_sd.keys()):
-                pipe.unet.proj_out.load_state_dict({k.replace('transformer_proj_out.', ''): v for k, v in full_train_sd.items() if k.startswith('transformer_proj_out.')})
-                print("Loaded Transformer proj_out layers.")
-            
-    elif args.network_type.lower() == "lora":
-        if args.transformer_lora_path and os.path.exists(args.transformer_lora_path):
-            print(f"Loading traditional LoRA from: {args.transformer_lora_path}")
-            lora_dir = os.path.dirname(args.transformer_lora_path)
-            lora_weight_name = os.path.basename(args.transformer_lora_path)
-            pipe.load_lora_weights(lora_dir, weight_name=lora_weight_name)
-        else:
-            if args.transformer_lora_path:
-                print(f"Warning: Traditional LoRA path {args.transformer_lora_path} not found. Skipping.")
-    else:
-        print(f"Warning: Network type '{args.network_type}' specified, but no corresponding weights path provided or found. Running without network.")
-
-    # --- End Load Network Weights ---
-
+            remapped_lora_sd = remap_qwen_lora_keys_for_pipeline(state_dict)
+            if not remapped_lora_sd:
+                print("Warning: No LoRA modules remained after remapping. Skipping LoRA loading.")
+            else:
+                transformer_state_dict = pipe.transformer.state_dict()
+                transformer_state_dict.update(remapped_lora_sd)
+                pipe.transformer.load_state_dict(transformer_state_dict, strict=False)
+                lora_loaded = True
+                print("Safetensors LoRA weights loaded successfully into transformer.")
+        except Exception as e:
+            print(f"Error loading safetensors LoRA weights: {e}")
+    
+    if not lora_loaded:
+        print("No LoRA weights were loaded. Proceeding with base model only.")
+    
+    if args.tokenizer_path and args.text_encoder_path:
+        print(f"Loading updated tokenizer from {args.tokenizer_path} and text encoder from {args.text_encoder_path}...")
+        try:
+            tokenizer = AutoTokenizer.from_pretrained(args.tokenizer_path, torch_dtype=torch_dtype)
+            text_encoder = Qwen2VLForConditionalGeneration.from_pretrained(
+                args.text_encoder_path, torch_dtype=torch_dtype, ignore_mismatched_sizes=True
+            ).to(device)
+            text_encoder.resize_token_embeddings(len(tokenizer))
+            pipe.tokenizer = tokenizer
+            pipe.text_encoder = text_encoder
+            print("Updated tokenizer and text encoder loaded and resized.")
+        except Exception as e:
+            print(f"Error loading tokenizer or text encoder: {e}")
+    
+    # Optimize for GPU memory
+    if device == "cuda":
+        pipe.enable_model_cpu_offload()
+    
     return pipe
 
-def main (args:argparse.Namespace, prompts: List) -> None:
-    # Ensure custom tokenizer and text_encoder paths are provided if loading embeddings
-    if args.embedding_path and (not args.tokenizer_path or not args.text_encoder_path):
-        raise ValueError("If --embedding_path is provided, --tokenizer_path and --text_encoder_path must also be provided.")
-
+def main(args: argparse.Namespace, prompts: List[str]) -> None:
+    """Main function to generate images with the QwenImagePipeline."""
     pipe = load_pipeline(args)
-    positive_magic = {
-        "en": "Ultra HD, 4K, cinematic composition." # for english prompt
-    }
-
-    # The token abstraction JSON path and prompt replacement logic is removed.
-    # Textual Inversion tokens (like [AB]) should be directly handled by the
-    # loaded tokenizer and text encoder.
-    # if args.token_abstraction_json_path:
-    #     with open(args.token_abstraction_json_path, "r") as file:
-    #         representation_tokens = json.load(file)
-    #     special_tokens = list(representation_tokens.keys())
-
-
+    
+    positive_magic = {"en": "Ultra HD, 4K, cinematic composition."}
     aspect_ratios = {
-        "1:1": (1024, 1024),
-        "16:9": (1664, 928),
-        "9:16": (928, 1664),
-        "4:3": (1472, 1140),
-        "3:4": (1140, 1472),
-        "3:2": (1584, 1056),
-        "2:3": (1056, 1584),
+        "1:1": (1024, 1024), "16:9": (1664, 928), "9:16": (928, 1664),
+        "4:3": (1472, 1140), "3:4": (1140, 1472), "3:2": (1584, 1056), "2:3": (1056, 1584),
     }
-
-    width, height = aspect_ratios[args.aspect_ratio]
-
-    for idx, prompt in enumerate(prompts):
-        # Removed the prompt replacement logic.
-        # The [AB] token should be present in the prompt and recognized by the loaded tokenizer.
-        # if args.token_abstraction_json_path:
-        #     for special_token in special_tokens:
-        #         prompt = prompt.replace(special_token, representation_tokens[special_token][0].replace(" ", ''))
+    
+    width, height = aspect_ratios.get(args.aspect_ratio, (1024, 1024))
+    print(f"Generating images with aspect ratio {args.aspect_ratio} ({width}x{height}).")
+    
+    representation_tokens = {}
+    selected_token = "[AB]_0"  # Default to first trained token
+    if args.token_abstraction_json_path and Path(args.token_abstraction_json_path).is_file():
+        with open(args.token_abstraction_json_path, "r") as file:
+            representation_tokens = json.load(file)
+        print(f"Loaded {len(representation_tokens)} Textual Inversion tokens for prompt abstraction.")
         
-        # Ensure trigger token "ab" is always included at the start if it isn't already.
-        # This is for a general trigger or domain word, distinct from the specific TI token [AB].
-        if not prompt.strip().startswith("ab "): 
-            prompt = "ab " + prompt
-            print("Prepending 'ab ' to prompt (general style/domain trigger).")
-
-        print(f"Using prompt: {prompt}")
-
-        images = pipe(
-            num_images_per_prompt=args.num_images_per_prompt,
-            prompt=prompt + " " + positive_magic["en"], # Added a space before positive_magic for better parsing
-            negative_prompt=args.negative_prompt,
-            width=width,
-            height=height,
-            num_inference_steps=args.num_inference_steps,
-            true_cfg_scale=args.true_cfg_scale,
-            generator=torch.Generator(device="cuda").manual_seed(args.seed)
-        ).images
-
-        os.makedirs(os.path.dirname(args.output_image_path), exist_ok=True)
-        timestamp = str(time.strftime("%d-%m-%y_%H-%M-%S"))
-
+        # Parse tokens.json to extract [AB]_0 to [AB]_31
+        if "[AB]" in representation_tokens:
+            concepts = representation_tokens["[AB]"]
+            if isinstance(concepts, list) and len(concepts) > 0:
+                # Split the string into individual tokens (e.g., [AB]_0, [AB]_1, ...)
+                token_list = concepts[0].split()
+                if token_list and all(re.match(r"\[AB\]_\d+", t) for t in token_list):
+                    print(f"Found trained tokens: {token_list}")
+                    selected_token = token_list[0]  # Use [AB]_0 as default
+                else:
+                    print("Warning: tokens.json format unexpected. Using default token [AB]_0.")
+    
+    for idx, prompt_orig in enumerate(prompts):
+        # Replace [AB] with selected_token (e.g., [AB]_0)
+        prompt_to_generate = prompt_orig.replace("[AB]", selected_token)
+        
+        print(f"Prompt after TI token replacement: '{prompt_to_generate}'")
+        print(f"--- Generating for original prompt: '{prompt_orig}' ---")
+        
+        generator = torch.Generator(device=pipe.device).manual_seed(args.seed)
+        
+        try:
+            images = pipe(
+                num_images_per_prompt=args.num_images_per_prompt,
+                prompt=prompt_to_generate + positive_magic["en"],
+                negative_prompt=args.negative_prompt,
+                width=width,
+                height=height,
+                num_inference_steps=args.num_inference_steps,
+                true_cfg_scale=args.true_cfg_scale,
+                generator=generator
+            ).images
+        except Exception as e:
+            print(f"Error during inference: {e}")
+            continue
+        
+        output_dir = Path(args.output_image_path).parent
+        output_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = time.strftime("%d-%m-%y_%H-%M-%S")
+        clean_prompt_for_filename = re.sub(r'[^a-zA-Z0-9_ -]', '', prompt_orig[:50]).strip() or f"prompt_{idx}"
+        
         for image_id, image in enumerate(images):
-            # Example output filename: inferenced_images/ab_woman_leather_jacket_0_0_2025-09-20_10-00-00.png
-            file_path = f"{args.output_image_path.replace('.png', '')}_{idx}_{image_id}_{timestamp}.png"
+            file_path = output_dir / f"{clean_prompt_for_filename}_{idx}_{timestamp}.png"
             image.save(file_path)
-            print(f"✅ Saved {file_path}")
-
+            print(f"Saved {file_path}")
 
 if __name__ == '__main__':
     args = parse_args()
     if not args.instruction and not args.prompts_path:
-        raise ValueError("Either --instruction or --prompts_path has to be specified, both are None")
-
+        raise ValueError("Either --instruction or --prompts_path must be specified.")
+    
+    prompts = []
     if args.prompts_path:
-        prompts_path = Path(args.prompts_path)
-        prompts = prompts_path.read_text(encoding="utf-8").splitlines()
+        prompts_file = Path(args.prompts_path)
+        if not prompts_file.exists():
+            raise FileNotFoundError(f"Prompts file not found at {args.prompts_path}")
+        prompts = prompts_file.read_text(encoding="utf-8").splitlines()
+        prompts = [p.strip() for p in prompts if p.strip()]
+        if not prompts:
+            raise ValueError(f"Prompts file {args.prompts_path} is empty or contains only whitespace.")
     else:
         prompts = [args.instruction]
+        if not prompts[0]:
+            raise ValueError("Instruction prompt is empty.")
+    
     main(args, prompts)

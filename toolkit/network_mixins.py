@@ -2,6 +2,7 @@ import json
 import os
 from collections import OrderedDict
 from typing import Optional, Union, List, Type, TYPE_CHECKING, Dict, Any, Literal
+import re  # Added for regex in key mapping
 
 import torch
 from optimum.quanto import QTensor
@@ -19,6 +20,11 @@ from optimum.quanto import QBytesTensor
 import peft
 from peft import get_peft_model_state_dict, set_peft_model_state_dict
 
+# This import is essential for the super().state_dict() call to resolve correctly
+# in the MRO for the non-AdaLoRA path.
+from toolkit.kohya_lora import LoRANetwork 
+
+
 if TYPE_CHECKING:
     from toolkit.lycoris_special import LycorisSpecialNetwork, LoConSpecialModule
     from toolkit.lora_special import LoRASpecialNetwork, LoRAModule
@@ -26,7 +32,8 @@ if TYPE_CHECKING:
     from toolkit.models.DoRA import DoRAModule
     from peft import PeftModel
 
-# Define Network and Module type hints here
+
+# Define Network and Module type hints
 Network = Union['LycorisSpecialNetwork', 'LoRASpecialNetwork']
 Module = Union['LoConSpecialModule', 'LoRAModule', 'DoRAModule']
 
@@ -48,6 +55,7 @@ ExtractMode = Literal[
     'quantile',
     'percentage'
 ]
+
 
 def broadcast_and_multiply(tensor, multiplier):
     # Determine the number of dimensions required
@@ -112,10 +120,10 @@ class ExtractableModuleMixin:
         if extract_mode == "existing":
             extract_mode = 'fixed'
             extract_mode_param = self.lora_dim
-            
+
         if isinstance(weight_to_extract, QBytesTensor):
             weight_to_extract = weight_to_extract.dequantize()
-        
+
         weight_to_extract = weight_to_extract.clone().detach().float()
 
         if self.org_module[0].__class__.__name__ in CONV_MODULES:
@@ -162,7 +170,7 @@ class ExtractableModuleMixin:
 
 class ToolkitModuleMixin:
     def __init__(
-            self,
+            self: Module,
             *args,
             network: Network,
             **kwargs
@@ -211,7 +219,6 @@ class ToolkitModuleMixin:
 
         # handle trainable scaler method locon does
         if hasattr(self, 'scalar'):
-            # scaler is a parameter update the value with 1.0
             scale = scale * self.scalar
 
         return lx * scale
@@ -220,9 +227,9 @@ class ToolkitModuleMixin:
         network: Network = self.network_ref()
         if not network.is_active:
             return self.org_forward(x, *args, **kwargs)
-        
+
         orig_dtype = x.dtype
-        
+
         if x.dtype != self.lora_down.weight.dtype:
             x = x.to(self.lora_down.weight.dtype)
 
@@ -256,10 +263,6 @@ class ToolkitModuleMixin:
             # we are doing lorm
             return self.lorm_forward(x, *args, **kwargs)
 
-        # The conditional forward for AdaLoRA is handled in LoRASpecialNetwork.apply_to
-        # and it replaces the UNet/TextEncoder references in the base_model.
-        # Individual LoRAModules don't need to check network.network_type here.
-
         # skip if not active
         if not network.is_active:
             skip = True
@@ -276,10 +279,6 @@ class ToolkitModuleMixin:
             # network is not active, avoid doing anything
             return self.org_forward(x, *args, **kwargs)
 
-        # if self.__class__.__name__ == "DoRAModule":
-        #     # return dora forward
-        #     return self.dora_forward(x, *args, **kwargs)
-        
         if self.__class__.__name__ == "LokrModule":
             return self._call_forward(x)
 
@@ -369,7 +368,6 @@ class ToolkitModuleMixin:
         scale = self.scale
         # handle trainable scaler method locon does
         if hasattr(self, 'scalar'):
-            # scaler is a parameter update the value with 1.0
             scale = scale * self.scalar
 
         # merge weight
@@ -450,6 +448,8 @@ class ToolkitNetworkMixin:
         self.peft_adapted_unet: Optional['PeftModel'] = None
         self.peft_adapted_text_encoders: List['PeftModel'] = []
         self.peft_adapter_name: str = "default_adalora_adapter"
+        # Stores references to full_train_in_out modules for access in get_state_dict and load_weights
+        self.full_train_in_out_modules: Dict[str, nn.Module] = {}
 
 
     def get_keymap(self: Network, force_weight_mapping=False):
@@ -474,9 +474,11 @@ class ToolkitNetworkMixin:
         if use_weight_mapping:
             keymap_name = f"stable_diffusion_{keymap_tail}.json"
 
-        keymap_path = os.path.join(KEYMAPS_ROOT, keymap_name)
-
         keymap = None
+        # Make sure KEYMAPS_ROOT exists or provide a default search path
+        keymap_root_path = os.environ.get("KEYMAPS_ROOT", KEYMAPS_ROOT) # Using KEYMAPS_ROOT from toolkit.paths
+        keymap_path = os.path.join(keymap_root_path, keymap_name)
+
         if os.path.exists(keymap_path):
             with open(keymap_path, 'r') as f:
                 keymap = json.load(f)['ldm_diffusers_keymap']
@@ -502,33 +504,32 @@ class ToolkitNetworkMixin:
             if base_model_instance is None:
                 raise ValueError("Base model reference is missing for AdaLoRA saving.")
 
-            if hasattr(base_model_instance, 'peft_adapted_text_encoders') and base_model_instance.peft_adapted_text_encoders:
-                for i, te_model in enumerate(base_model_instance.peft_adapted_text_encoders):
+            # Collect PEFT adapter states
+            if self.peft_adapted_text_encoders:
+                for i, te_model in enumerate(self.peft_adapted_text_encoders):
                     if isinstance(te_model, peft.PeftModel) and \
-                       hasattr(te_model, 'peft_config') and f"default_adalora_adapter_te_{i}" in te_model.peft_config:
-                        unwrapped_te_model = te_model.base_model # unwrap if it was wrapped by Accelerator
-                        te_state_dict = get_peft_model_state_dict(unwrapped_te_model, adapter_name=f"default_adalora_adapter_te_{i}")
+                       hasattr(te_model, 'peft_config') and f"{self.peft_adapter_name}_te_{i}" in te_model.peft_config:
+                        unwrapped_te_model = te_model.base_model if hasattr(te_model, 'base_model') else te_model
+                        te_state_dict = get_peft_model_state_dict(unwrapped_te_model, adapter_name=f"{self.peft_adapter_name}_te_{i}")
                         for k, v in te_state_dict.items():
                             adapters_state_dict[f"text_encoder.{i}.{k}"] = v.detach().clone().to("cpu").to(dtype)
             
-            if hasattr(base_model_instance, 'peft_adapted_unet') and base_model_instance.peft_adapted_unet:
-                if isinstance(base_model_instance.peft_adapted_unet, peft.PeftModel) and \
-                   hasattr(base_model_instance.peft_adapted_unet, 'peft_config') and "default_adalora_adapter_unet" in base_model_instance.peft_adapted_unet.peft_config:
-                    unwrapped_unet_model = base_model_instance.peft_adapted_unet.base_model # unwrap if it was wrapped by Accelerator
-                    unet_state_dict = get_peft_model_state_dict(unwrapped_unet_model, adapter_name="default_adalora_adapter_unet")
+            if self.peft_adapted_unet:
+                if isinstance(self.peft_adapted_unet, peft.PeftModel) and \
+                   hasattr(self.peft_adapted_unet, 'peft_config') and f"{self.peft_adapter_name}_unet" in self.peft_adapted_unet.peft_config:
+                    unwrapped_unet_model = self.peft_adapted_unet.base_model if hasattr(self.peft_adapted_unet, 'base_model') else self.peft_adapted_unet
+                    unet_state_dict = get_peft_model_state_dict(unwrapped_unet_model, adapter_name=f"{self.peft_adapter_name}_unet")
                     for k, v in unet_state_dict.items():
                         adapters_state_dict[f"transformer.{k}"] = v.detach().clone().to("cpu").to(dtype)
             
-            # Handle full_train_in_out modules
-            if self.full_train_in_out:
-                if hasattr(base_model_instance, 'transformer_pos_embed') and base_model_instance.transformer_pos_embed is not None:
-                    adapters_state_dict.update({"transformer_pos_embed." + k: v.detach().clone().to("cpu").to(dtype) for k, v in base_model_instance.transformer_pos_embed.state_dict().items()})
-                if hasattr(base_model_instance, 'transformer_proj_out') and base_model_instance.transformer_proj_out is not None:
-                    adapters_state_dict.update({"transformer_proj_out." + k: v.detach().clone().to("cpu").to(dtype) for k, v in base_model_instance.transformer_proj_out.state_dict().items()})
-                if hasattr(base_model_instance, 'unet_conv_in') and base_model_instance.unet_conv_in is not None:
-                    adapters_state_dict.update({"unet_conv_in." + k: v.detach().clone().to("cpu").to(dtype) for k, v in base_model_instance.unet_conv_in.state_dict().items()})
-                if hasattr(base_model_instance, 'unet_conv_out') and base_model_instance.unet_conv_out is not None:
-                    adapters_state_dict.update({"unet_conv_out." + k: v.detach().clone().to("cpu").to(dtype) for k, v in base_model_instance.unet_conv_out.state_dict().items()})
+            # Handle full_train_in_out modules explicitly
+            if self.full_train_in_out_modules:
+                for module_name, module_instance in self.full_train_in_out_modules.items():
+                    if isinstance(module_instance, nn.Module):
+                        for k, v in module_instance.state_dict().items():
+                            adapters_state_dict[f"{module_name}.{k}"] = v.detach().clone().to("cpu").to(dtype)
+                    else:
+                        print(f"Warning: full_train_in_out_modules contains non-nn.Module instance for {module_name}. Skipping save.")
 
             if extra_state_dict:
                 adapters_state_dict.update(extra_state_dict)
@@ -536,41 +537,23 @@ class ToolkitNetworkMixin:
             return adapters_state_dict
 
         # --- Original LoRA/LoCon/LoRM state_dict generation ---
-        state_dict = self.state_dict()
-        save_dict_formatted = OrderedDict()
-        for key in list(state_dict.keys()):
-            v = state_dict[key]
-            v = v.detach().clone().to("cpu").to(dtype)
-            
-            keymap_for_lora = self.get_keymap()
-            save_key = key
-            if keymap_for_lora is not None and key in keymap_for_lora:
-                save_key = keymap_for_lora[key] # This might be the remapping
-            
-            if self.peft_format: # This refers to internal PEFT format for non-AdaLoRA
-                new_key = save_key
-                if new_key.endswith('.alpha'):
-                    continue
-                new_key = new_key.replace('lora_down', 'lora_A')
-                new_key = new_key.replace('lora_up', 'lora_B')
-                new_key = new_key.replace('$$', '.') # This is for internal toolkit representation
-                save_key = new_key
-            
-            if self.network_type.lower() == "lokr":
-                new_key = save_key
-                new_key = new_key.replace('lora_transformer_', 'lycoris_')
-                save_key = new_key
-            
-            save_dict_formatted[save_key] = v
-            del state_dict[key]
+        # FIXED: Call state_dict() on `super()` to resolve to LoRANetwork's (or nn.Module's) state_dict method.
+        # This gets the raw internal state of the LoRANetwork instance.
+        state_dict = super().state_dict(keep_vars=False) # `keep_vars=False` for detached tensors
+        
+        # Now, apply the base model's conversion for non-AdaLoRA to ensure external compatibility
+        if self.base_model_ref is not None:
+            # We assume LoRANetwork.state_dict() returns a standard OrderedDict of tensors.
+            # convert_lora_weights_before_save expects a dict and returns a dict.
+            state_dict = self.base_model_ref().convert_lora_weights_before_save(state_dict)
 
         if extra_state_dict is not None:
             for key in list(extra_state_dict.keys()):
                 v = extra_state_dict[key]
                 v = v.detach().clone().to("cpu").to(dtype)
-                save_dict_formatted[key] = v
-        # --- Removed the base_model_ref().convert_lora_weights_before_save call from here ---
-        return save_dict_formatted
+                state_dict[key] = v
+
+        return state_dict
 
     def save_weights(
             self: Network,
@@ -578,8 +561,6 @@ class ToolkitNetworkMixin:
             metadata=None,
             extra_state_dict: Optional[OrderedDict] = None
     ):
-        # For all network types, we now save to a single .safetensors file.
-        # get_state_dict is responsible for collecting the correct format.
         consolidated_sd = self.get_state_dict(extra_state_dict=extra_state_dict, dtype=dtype)
         
         if metadata is not None and len(metadata) == 0:
@@ -597,20 +578,22 @@ class ToolkitNetworkMixin:
 
     def load_weights(self: Network, file, force_weight_mapping=False):
         from safetensors.torch import load_file
-        full_state_dict = load_file(file, device="cpu")
+
+        # Load the raw state_dict from the file, regardless of network type initially
+        # `file` here is the original string path passed from BaseSDTrainProcess
+        full_state_dict_from_file = load_file(file, device="cpu")
+        
         base_model_instance = self.base_model_ref()
         if base_model_instance is None:
-            # If base_model_ref is None, we can't load full_train_in_out or PEFT adapters correctly
-            # This should have been caught earlier during network init.
             raise ValueError("Base model reference is missing, cannot load network weights.")
 
-        unet_peft_state_dict = OrderedDict()
-        text_encoder_peft_state_dict_map = {}
-        extra_dict = OrderedDict() # Will capture anything not directly handled (e.g., 'emb_params' for TI)
+        # --- AdaLoRA Loading Logic ---
+        if self.network_type.lower() == "adalora":
+            unet_peft_state_dict = OrderedDict()
+            text_encoder_peft_state_dict_map = {}
+            extra_dict = OrderedDict() 
 
-        # Distribute keys from the loaded .safetensors
-        for key, value in full_state_dict.items():
-            if self.network_type.lower() == "adalora":
+            for key, value in full_state_dict_from_file.items():
                 if key.startswith("transformer."): # UNet AdaLoRA
                     unet_peft_state_dict[key.replace("transformer.", "")] = value
                 elif key.startswith("text_encoder."): # Text Encoder AdaLoRA
@@ -621,84 +604,93 @@ class ToolkitNetworkMixin:
                         if te_idx not in text_encoder_peft_state_dict_map:
                             text_encoder_peft_state_dict_map[te_idx] = OrderedDict()
                         text_encoder_peft_state_dict_map[te_idx][peft_te_key] = value
-                    else: 
+                    else: # Fallback for single text encoder or if old naming convention is used
                         if 0 not in text_encoder_peft_state_dict_map:
                             text_encoder_peft_state_dict_map[0] = OrderedDict()
                         text_encoder_peft_state_dict_map[0][key.replace("text_encoder.", "")] = value
-                # Handle full_train_in_out layers directly to base_model_instance
+                # Handle full_train_in_out layers directly to ToolkitNetworkMixin's stored modules
                 elif key.startswith("transformer_pos_embed."):
-                    if hasattr(base_model_instance, 'transformer_pos_embed') and base_model_instance.transformer_pos_embed is not None:
-                        base_model_instance.transformer_pos_embed.load_state_dict({key.replace("transformer_pos_embed.", ""): value}, strict=False)
+                    if "transformer_pos_embed" in self.full_train_in_out_modules and self.full_train_in_out_modules["transformer_pos_embed"] is not None:
+                        self.full_train_in_out_modules["transformer_pos_embed"].load_state_dict({key.replace("transformer_pos_embed.", ""): value}, strict=False)
                     else: extra_dict[key] = value # Fallback if layer somehow doesn't exist
                 elif key.startswith("transformer_proj_out."):
-                    if hasattr(base_model_instance, 'transformer_proj_out') and base_model_instance.transformer_proj_out is not None:
-                        base_model_instance.transformer_proj_out.load_state_dict({key.replace("transformer_proj_out.", ""): value}, strict=False)
+                    if "transformer_proj_out" in self.full_train_in_out_modules and self.full_train_in_out_modules["transformer_proj_out"] is not None:
+                        self.full_train_in_out_modules["transformer_proj_out"].load_state_dict({key.replace("transformer_proj_out.", ""): value}, strict=False)
                     else: extra_dict[key] = value
                 elif key.startswith("unet_conv_in."):
-                    if hasattr(base_model_instance, 'unet_conv_in') and base_model_instance.unet_conv_in is not None:
-                        base_model_instance.unet_conv_in.load_state_dict({key.replace("unet_conv_in.", ""): value}, strict=False)
+                    if "unet_conv_in" in self.full_train_in_out_modules and self.full_train_in_out_modules["unet_conv_in"] is not None:
+                        self.full_train_in_out_modules["unet_conv_in"].load_state_dict({key.replace("unet_conv_in.", ""): value}, strict=False)
                     else: extra_dict[key] = value
                 elif key.startswith("unet_conv_out."):
-                    if hasattr(base_model_instance, 'unet_conv_out') and base_model_instance.unet_conv_out is not None:
-                        base_model_instance.unet_conv_out.load_state_dict({key.replace("unet_conv_out.", ""): value}, strict=False)
+                    if "unet_conv_out" in self.full_train_in_out_modules and self.full_train_in_out_modules["unet_conv_out"] is not None:
+                        self.full_train_in_out_modules["unet_conv_out"].load_state_dict({key.replace("unet_conv_out.", ""): value}, strict=False)
                     else: extra_dict[key] = value
                 else: # Any other keys (e.g., 'emb_params' for TI)
                     extra_dict[key] = value
-            else: # Original LoRA/LoCon/LoRM load logic
-                keymap = self.get_keymap(force_weight_mapping)
-                keymap = {} if keymap is None else keymap
-                load_key = keymap[key] if key in keymap else key
-
-                if self.peft_format: # Internal PEFT-like format for non-AdaLoRA
-                    if load_key.endswith('.alpha'): continue
-                    load_key = load_key.replace('lora_A', 'lora_down').replace('lora_B', 'lora_up').replace('.', '$$')
-                    load_key = load_key.replace('$$lora_down$$', '.lora_down.').replace('$$lora_up$$', '.lora_up.')
-                
-                if self.network_type.lower() == "lokr":
-                    load_key = load_key.replace('lycoris_', 'lora_transformer_')
-
-                # For traditional LoRA, keys might match directly, or be in extra_dict
-                if load_key not in self.state_dict():
-                    extra_dict[load_key] = value
-                else:
-                    self.state_dict()[load_key].copy_(value) # Directly copy value
-        
-        # Apply PEFT state dicts for AdaLoRA
-        if self.network_type.lower() == "adalora":
+            
+            # Apply PEFT state dicts for AdaLoRA
             if self.peft_adapted_unet and unet_peft_state_dict:
                 set_peft_model_state_dict(self.peft_adapted_unet, unet_peft_state_dict, adapter_name=f"{self.peft_adapter_name}_unet")
             if self.peft_adapted_text_encoders:
                 for idx, te_model in enumerate(self.peft_adapted_text_encoders):
                     if idx in text_encoder_peft_state_dict_map:
-                        set_peft_model_state_dict(te_model, text_encoder_peft_state_dict_map[idx], adapter_name=f"default_adalora_adapter_te_{idx}")
+                        set_peft_model_state_dict(te_model, text_encoder_peft_state_dict_map[idx], adapter_name=f"{self.peft_adapter_name}_te_{idx}")
             print(f"Loaded AdaLoRA weights from {file}")
-        else: # For other network types, apply the main state dict
-            # The direct copy above might be enough, but to be robust for missing/unexpected keys
-            load_sd_for_strict_loading = OrderedDict()
-            for key, value in full_state_dict.items():
-                keymap = self.get_keymap(force_weight_mapping)
-                keymap = {} if keymap is None else keymap
-                load_key = keymap[key] if key in keymap else key
-                # Apply peft_format/lokr remapping to load_key if applicable
-                if self.peft_format:
-                    if load_key.endswith('.alpha'): continue
-                    load_key = load_key.replace('lora_A', 'lora_down').replace('lora_B', 'lora_up').replace('.', '$$')
-                    load_key = load_key.replace('$$lora_down$$', '.lora_down.').replace('$$lora_up$$', '.lora_up.')
-                if self.network_type.lower() == "lokr":
-                    load_key = load_key.replace('lycoris_', 'lora_transformer_')
+            
+            if len(extra_dict.keys()) == 0:
+                extra_dict = None
+            return extra_dict
 
-                if load_key in self.state_dict():
-                    load_sd_for_strict_loading[load_key] = value
-                else:
-                    extra_dict[load_key] = value # Add to extra if not directly loadable by network.
+        # --- Original LoRA/LoCon/LoRM Loading Logic (if not AdaLoRA) ---
+        # 1. Apply the base model's conversion to the raw loaded state_dict
+        # This converts external-facing keys (from the .safetensors file) to an internal, consistent format (LDM-style).
+        converted_sd_for_internal_use = full_state_dict_from_file 
+        if self.base_model_ref is not None:
+            converted_sd_for_internal_use = self.base_model_ref().convert_lora_weights_before_load(full_state_dict_from_file)
 
-            info = self.load_state_dict(load_sd_for_strict_loading, strict=False)
-            if info.missing_keys: print(f"Warning: LoRA loading missing keys: {info.missing_keys}")
-            if info.unexpected_keys: print(f"Warning: LoRA loading unexpected keys: {info.unexpected_keys}")
+        # 2. Get the current state_dict of *this* network instance (LoRASpecialNetwork/LycorisSpecialNetwork)
+        # This gets the state dict of the LoRA/LoCon/LoKR/LoRM modules themselves.
+        current_net_state_dict = self.state_dict()
 
-        if len(extra_dict.keys()) == 0:
-            extra_dict = None
-        return extra_dict
+        # 3. Filter and prepare the state_dict to load into *this* network instance
+        load_sd_into_network = OrderedDict()
+        extra_dict_from_load = OrderedDict()
+
+        # Iterate through the keys of the `converted_sd_for_internal_use` (LDM-style)
+        for key_in_converted_sd, value in converted_sd_for_internal_use.items():
+            target_key_in_network = key_in_converted_sd
+            
+            # Apply transformations to match the actual PyTorch module names in LoRASpecialNetwork.
+            # This handles the `peft_format` (e.g., `.` -> `$$`) and `lokr` specific naming.
+            if self.peft_format:
+                target_key_in_network = target_key_in_network.replace('.', '$$')
+                target_key_in_network = target_key_in_network.replace('lora_A', 'lora_down').replace('lora_B', 'lora_up')
+                # Clean up any residual `$$lora_down$$` or `$$lora_up$$` to `.lora_down.`
+                target_key_in_network = re.sub(r'\$\$lora_(down|up)\$\$', r'.lora_\1.', target_key_in_network)
+            
+            if self.network_type.lower() == "lokr":
+                target_key_in_network = target_key_in_network.replace('lycoris_', 'lora_transformer_')
+
+            if target_key_in_network in current_net_state_dict:
+                load_sd_into_network[target_key_in_network] = value.to(current_net_state_dict[target_key_in_network].dtype)
+            else:
+                extra_dict_from_load[key_in_converted_sd] = value # Keep original key for extra dict if not for network.
+
+        # 4. Load the filtered state_dict into the current network instance
+        # This is `self` (the LoRASpecialNetwork instance).
+        info = self.load_state_dict(load_sd_into_network, strict=False)
+        
+        if len(info.missing_keys) > 0:
+            print(f"Warning: Missing keys during LoRA load_state_dict: {info.missing_keys}")
+            # If `force_weight_mapping` is true, and keys are still missing, it means the mapping logic might need
+            # further refinement or a different base_model.convert_lora_weights_before_load might be needed.
+        if len(info.unexpected_keys) > 0:
+            print(f"Warning: Unexpected keys during LoRA load_state_dict: {info.unexpected_keys}")
+
+        # 5. Return the `extra_dict_from_load`
+        if len(extra_dict_from_load.keys()) == 0:
+            extra_dict_from_load = None
+        return extra_dict_from_load
 
     def _update_torch_multiplier(self: Network):
         if self.network_type.lower() == "adalora":
@@ -789,7 +781,13 @@ class ToolkitNetworkMixin:
         if self.network_type.lower() == "adalora":
             # For AdaLoRA, the trainable modules are the PEFT adapters themselves,
             # not individual LoRAModule instances managed by the network here.
-            return []
+            all_adalora_modules = []
+            if self.peft_adapted_unet:
+                all_adalora_modules.append(self.peft_adapted_unet)
+            all_adalora_modules.extend(self.peft_adapted_text_encoders)
+            all_adalora_modules.extend(list(self.full_train_in_out_modules.values())) # Add the full_train_in_out modules
+            return all_adalora_modules
+            
         loras = []
         if hasattr(self, 'unet_loras'):
             loras += self.unet_loras
@@ -816,19 +814,24 @@ class ToolkitNetworkMixin:
     def enable_gradient_checkpointing(self: 'LoRASpecialNetwork'):
         self.is_checkpointing = True
         if self.network_type.lower() == "adalora":
+            # Checkpoint the PEFT-adapted models
             if self.peft_adapted_unet and hasattr(self.peft_adapted_unet, "gradient_checkpointing_enable"):
                 self.peft_adapted_unet.gradient_checkpointing_enable()
             if self.peft_adapted_text_encoders:
                 for te_model in self.peft_adapted_text_encoders:
                     if hasattr(te_model, "gradient_checkpointing_enable"):
                         te_model.gradient_checkpointing_enable()
+            # Checkpoint full_train_in_out modules
+            for module_name, module_instance in self.full_train_in_out_modules.items():
+                if hasattr(module_instance, 'enable_gradient_checkpointing'):
+                    module_instance.enable_gradient_checkpointing()
+                elif hasattr(module_instance, 'gradient_checkpointing'):
+                    module_instance.gradient_checkpointing = True
         else:
-            # Call super().enable_gradient_checkpointing if it exists and is applicable,
-            # otherwise just use _update_checkpointing
-            if hasattr(super(), 'enable_gradient_checkpointing'):
-                super().enable_gradient_checkpointing()
+            # Delegate to parent LoRANetwork's enable_gradient_checkpointing and apply to LoRAModules
+            super().enable_gradient_checkpointing()
             self._update_checkpointing()
-    
+
     def disable_gradient_checkpointing(self: 'LoRASpecialNetwork'):
         self.is_checkpointing = False
         if self.network_type.lower() == "adalora":
@@ -838,9 +841,14 @@ class ToolkitNetworkMixin:
                 for te_model in self.peft_adapted_text_encoders:
                     if hasattr(te_model, "gradient_checkpointing_disable"):
                         te_model.gradient_checkpointing_disable()
+            for module_name, module_instance in self.full_train_in_out_modules.items():
+                if hasattr(module_instance, 'disable_gradient_checkpointing'):
+                    module_instance.disable_gradient_checkpointing()
+                elif hasattr(module_instance, 'gradient_checkpointing'):
+                    module_instance.gradient_checkpointing = False
         else:
-            if hasattr(super(), 'disable_gradient_checkpointing'):
-                super().disable_gradient_checkpointing()
+            # Delegate to parent LoRANetwork's disable_gradient_checkpointing and apply to LoRAModules
+            super().disable_gradient_checkpointing()
             self._update_checkpointing()
 
     def merge_in(self: 'LoRASpecialNetwork', merge_weight=1.0):

@@ -1704,7 +1704,7 @@ class BaseSDTrainProcess(BaseTrainProcess):
 
 
 
-    def end_training_loop (self, unet, noise_scheduler, optimizer, tokenizer, text_encoder):
+    def end_training_loop(self, unet, noise_scheduler, optimizer, tokenizer, text_encoder):
         ###################################################################
         ##  END TRAIN LOOP
         ###################################################################
@@ -1712,7 +1712,8 @@ class BaseSDTrainProcess(BaseTrainProcess):
         if self.progress_bar is not None:
             self.progress_bar.close()
         if self.train_config.free_u:
-            self.sd.pipeline.disable_freeu()
+            if hasattr(self.sd, 'pipeline') and hasattr(self.sd.pipeline, 'disable_freeu'):
+                self.sd.pipeline.disable_freeu()
         if not self.train_config.disable_sampling:
             self.sample(self.step_num)
             self.logger.commit(step=self.step_num)
@@ -1725,35 +1726,55 @@ class BaseSDTrainProcess(BaseTrainProcess):
         if self.accelerator.is_main_process:
             # push to hub
             if self.save_config.push_to_hub:
-                if("HF_TOKEN" not in os.environ):
+                if "HF_TOKEN" not in os.environ:
                     interpreter_login(new_session=False, write_permission=True)
                 self.push_to_hub(
                     repo_id=self.save_config.hf_repo_id,
                     private=self.save_config.hf_private
                 )
-        
-        # --- START MODIFICATION FOR UNWRAPPING BEFORE DELETION ---
-        # Unwrap models if they were wrapped by Accelerator before deleting to avoid potential issues
-        del (
-            self.sd,
-            unet, # The base unet might be wrapped by PEFT if AdaLoRA, but the self.sd.unet would point to the PEFT model
-            noise_scheduler,
-            optimizer,
-            self.network, # This is the LoRASpecialNetwork instance
-            tokenizer,
-            text_encoder, # The base text_encoder might be wrapped by PEFT
-        )
-        # Explicitly delete PEFT adapted models if they exist
-        if self.network is not None and self.network_config.type.lower() == "adalora":
-            if self.network.peft_adapted_unet is not None:
+
+        # --- Standard cleanup of major components ---
+        # Use hasattr and check for None before deletion to prevent potential errors
+        # if any of these were never initialized or were already implicitly collected.
+        # This preserves functionality and prevents AttributeErrors during cleanup.
+        if hasattr(self, 'sd') and self.sd is not None: del self.sd
+        if unet is not None: del unet
+        if noise_scheduler is not None: del noise_scheduler
+        if optimizer is not None: del optimizer
+        if tokenizer is not None: del tokenizer
+        if text_encoder is not None: del text_encoder
+
+        # --- Conditional AdaLoRA cleanup ---
+        # This block explicitly handles deletion of PEFT-specific modules if AdaLoRA was used.
+        # We need to check if 'network' attribute exists on 'self' first,
+        # then check if it's not None, and then check its type for AdaLoRA specifics.
+        # This is the line where the AttributeError was occurring. The `hasattr` chain
+        # is now explicitly defensive.
+        if hasattr(self, 'network') and self.network is not None and \
+           hasattr(self.network, 'network_config') and self.network.network_config is not None and \
+           hasattr(self.network.network_config, 'type') and self.network.network_config.type.lower() == "adalora":
+            
+            # Use hasattr checks before accessing potentially non-existent attributes on self.network
+            if hasattr(self.network, 'peft_adapted_unet') and self.network.peft_adapted_unet is not None:
                 del self.network.peft_adapted_unet
-            for te_model in self.network.peft_adapted_text_encoders:
-                del te_model
-            if hasattr(self.network, 'unet_conv_in'): del self.network.unet_conv_in
-            if hasattr(self.network, 'unet_conv_out'): del self.network.unet_conv_out
-            if hasattr(self.network, 'transformer_pos_embed'): del self.network.transformer_pos_embed
-            if hasattr(self.network, 'transformer_proj_out'): del self.network.transformer_proj_out
-        # --- END MODIFICATION ---
+            
+            if hasattr(self.network, 'peft_adapted_text_encoders') and self.network.peft_adapted_text_encoders:
+                for te_model in self.network.peft_adapted_text_encoders:
+                    if te_model is not None:
+                        del te_model
+                self.network.peft_adapted_text_encoders.clear() # Clear the list reference
+
+            if hasattr(self.network, 'full_train_in_out_modules') and self.network.full_train_in_out_modules:
+                for module_name, module_instance in self.network.full_train_in_out_modules.items():
+                    if module_instance is not None:
+                        del module_instance
+                self.network.full_train_in_out_modules.clear() # Clear dictionary after deletion
+
+        # --- Final deletion of the network instance itself ---
+        # This ensures that even if it's a non-AdaLoRA network or if the AdaLoRA cleanup failed,
+        # the network attribute is properly removed from the SDTrainer object.
+        if hasattr(self, 'network') and self.network is not None:
+            del self.network
 
         flush()
         self.done_hook()

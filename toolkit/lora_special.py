@@ -118,7 +118,7 @@ class LoRASpecialNetwork(ToolkitNetworkMixin, LoRANetwork):
     NUM_OF_BLOCKS = 12  # フルモデル相当でのup,downの層の数
 
     UNET_TARGET_REPLACE_MODULE = ["UNet2DConditionModel"]
-    UNET_TARGET_REPLACE_MODULE_CONV2D_3X3 = ["UNET2DConditionModel"]
+    UNET_TARGET_REPLACE_MODULE_CONV2D_3X3 = ["UNet2DConditionModel"]
     TEXT_ENCODER_TARGET_REPLACE_MODULE = ["CLIPAttention", "CLIPMLP"]
     LORA_PREFIX_UNET = "lora_unet"
     PEFT_PREFIX_UNET = "unet"
@@ -193,7 +193,7 @@ class LoRASpecialNetwork(ToolkitNetworkMixin, LoRANetwork):
 
         # 3. Create a copy of kwargs for the mixin, removing network_config
         _kwargs_for_mixin = kwargs.copy()
-        _kwargs_for_mixin.pop("network_config", None)
+        _kwargs_for_mixin.pop("network_config", None) # Ensure network_config is not passed twice to mixin
 
         # 4. Call ToolkitNetworkMixin.__init__
         ToolkitNetworkMixin.__init__(
@@ -205,7 +205,7 @@ class LoRASpecialNetwork(ToolkitNetworkMixin, LoRANetwork):
             is_lorm=is_lorm,
             base_model_ref=weakref.ref(base_model) if base_model is not None else None,
             network_type=network_type,
-            network_config=self.network_config,
+            network_config=self.network_config, # Pass it here, where it's stored
             **_kwargs_for_mixin,
         )
         if ignore_if_contains is None:
@@ -225,7 +225,7 @@ class LoRASpecialNetwork(ToolkitNetworkMixin, LoRANetwork):
         self._multiplier: float = 1.0
         self.is_active: bool = False
         self.torch_multiplier = None
-        self.multiplier = multiplier
+        self.multiplier = multiplier # This triggers _update_torch_multiplier
         self.is_sdxl = is_sdxl
         self.is_ssd = kwargs.get('is_ssd', False)
         self.is_vega = kwargs.get('is_vega', False)
@@ -237,8 +237,9 @@ class LoRASpecialNetwork(ToolkitNetworkMixin, LoRANetwork):
         self.is_lumina2 = is_lumina2
         self.network_type = network_type
         self.is_assistant_adapter = is_assistant_adapter
-        self.peft_adapter_name = "default_adalora_adapter"
+        self.peft_adapter_name = "default_adalora_adapter" # Consistent adapter name
 
+        # These are populated by PEFT directly when network_type is adalora
         self.peft_adapted_unet = None
         self.peft_adapted_text_encoders = []
 
@@ -261,9 +262,9 @@ class LoRASpecialNetwork(ToolkitNetworkMixin, LoRANetwork):
 
         if self.peft_format and self.network_type.lower() != "adalora":
             self.alpha = self.lora_dim
-            alpha = self.alpha
+            alpha = self.alpha # Update local alpha variable for create_modules
             self.conv_alpha = self.conv_lora_dim
-            conv_alpha = self.conv_alpha
+            conv_alpha = self.conv_alpha # Update local conv_alpha variable for create_modules
 
         self.full_train_in_out = full_train_in_out
 
@@ -273,18 +274,25 @@ class LoRASpecialNetwork(ToolkitNetworkMixin, LoRANetwork):
             if self.network_config is None:
                 raise ValueError("NetworkConfig is required for AdaLoRA")
 
-            # Debug: Inspect UNet structure to find compatible target_modules
-            print("Debug: Inspecting UNet structure for target_modules")
-            linear_modules = []
-            for name, module in unet.named_modules():
-                if isinstance(module, torch.nn.Linear):
-                    linear_modules.append(name)
-            print(f"Found {len(linear_modules)} Linear modules in UNet: {linear_modules[:10]}...")  # Print first 10 for brevity
+            # Validate target_modules based on model architecture
+            if self.is_flux or self.is_v3 or self.is_pixart or self.is_auraflow or self.is_lumina2 or (base_model is not None and base_model.arch == "wan21"):
+                # Transformer-based models
+                unet_adalora_target_modules = ["to_q", "to_k", "to_v", "to_out.0", "proj", "norm_out.linear"] # Example for Flux/SD3-like
+            elif self.is_sdxl or self.is_ssd or self.is_vega:
+                # SDXL-like UNet (Resnet+Transformer)
+                unet_adalora_target_modules = ["to_q", "to_k", "to_v", "to_out.0", "proj", "norm_out.linear", "conv_shortcut", "conv1", "conv2"]
+            else:
+                # SD1.x/2.x UNet
+                unet_adalora_target_modules = ["to_q", "to_k", "to_v", "to_out.0", "conv_shortcut", "conv1", "conv2"]
 
-            adalora_config = AdaLoraConfig(
+            # General Text Encoder target modules
+            te_adalora_target_modules_clip = ["q_proj", "k_proj", "v_proj", "out_proj", "fc1", "fc2"]
+            te_adalora_target_modules_t5 = ["q", "k", "v", "o", "wi_0", "wi_1", "wo"] # For T5-based (e.g., SD3 TE2)
+
+            adalora_config_base = AdaLoraConfig(
                 r=self.network_config.adalora_init_r,
                 lora_alpha=self.network_config.linear_alpha,
-                target_modules=["to_q", "to_k", "to_v", "to_out.0", "proj", "norm_out.linear"],  # Refined target_modules
+                target_modules=[], # Will be set conditionally
                 lora_dropout=self.network_config.dropout if self.network_config.dropout is not None else 0.0,
                 tinit=self.network_config.adalora_tinit,
                 tfinal=self.network_config.adalora_tfinal,
@@ -294,6 +302,7 @@ class LoRASpecialNetwork(ToolkitNetworkMixin, LoRANetwork):
                 orth_reg_weight=self.network_config.adalora_orth_reg_weight,
                 total_step=self.network_config.adalora_total_step,
                 init_lora_weights="lora_only",
+                peft_type="ADALORA"
             )
 
             text_encoders_list = text_encoder if isinstance(text_encoder, list) else [text_encoder]
@@ -303,62 +312,69 @@ class LoRASpecialNetwork(ToolkitNetworkMixin, LoRANetwork):
                     if (not use_text_encoder_1 and i == 0) or (not use_text_encoder_2 and i == 1):
                         continue
                     print(f"Adapting Text Encoder {i} with AdaLoRA...")
-                    te_adalora_config = copy.deepcopy(adalora_config)
-                    if hasattr(te_model, 'config') and hasattr(te_model.config, 'model_type') and 'clip' in te_model.config.model_type:
-                        te_adalora_config.target_modules = ["q_proj", "k_proj", "v_proj", "out_proj", "fc1", "fc2"]
-                    elif hasattr(te_model, 'config') and hasattr(te_model.config, 'model_type') and 't5' in te_model.config.model_type:
-                        te_adalora_config.target_modules = ["q", "k", "v", "o", "wi_0", "wi_1", "wo"]
+                    te_adalora_config = copy.deepcopy(adalora_config_base)
+                    
+                    if hasattr(te_model, 'config') and hasattr(te_model.config, 'model_type'):
+                        if 'clip' in te_model.config.model_type:
+                            te_adalora_config.target_modules = te_adalora_target_modules_clip
+                        elif 't5' in te_model.config.model_type:
+                            te_adalora_config.target_modules = te_adalora_target_modules_t5
+                        else:
+                            te_adalora_config.target_modules = te_adalora_target_modules_clip # Default to CLIP if unknown
                     else:
-                        te_adalora_config.target_modules = ["q_proj", "k_proj", "v_proj", "out_proj", "fc1", "fc2"]
+                        te_adalora_config.target_modules = te_adalora_target_modules_clip
+                    
                     te_adapter_name = f"{self.peft_adapter_name}_te_{i}"
-                    te_adalora_config.peft_type = "ADALORA"
                     te_peft_model = get_peft_model(te_model, te_adalora_config, te_adapter_name)
                     self.peft_adapted_text_encoders.append(te_peft_model)
                     print(f"Text Encoder {i} AdaLoRA trainable params: {te_peft_model.print_trainable_parameters()}")
                 if base_model is not None:
-                    base_model.peft_adapted_text_encoders = self.peft_adapted_text_encoders
+                    base_model.peft_adapted_text_encoders = self.peft_adapted_text_encoders # Link back to StableDiffusion
 
             if train_unet:
                 print(f"Adapting UNet with AdaLoRA...")
-                unet_adalora_config = copy.deepcopy(adalora_config)
-                unet_adalora_config.target_modules = ["to_q", "to_k", "to_v", "to_out.0", "proj", "norm_out.linear"]  # Refined target_modules
+                unet_adalora_config = copy.deepcopy(adalora_config_base)
+                unet_adalora_config.target_modules = unet_adalora_target_modules
                 unet_adapter_name = f"{self.peft_adapter_name}_unet"
-                unet_adalora_config.peft_type = "ADALORA"
                 self.peft_adapted_unet = get_peft_model(unet, unet_adalora_config, unet_adapter_name)
                 print(f"UNet AdaLoRA trainable params: {self.peft_adapted_unet.print_trainable_parameters()}")
                 if base_model is not None:
-                    base_model.peft_adapted_unet = self.peft_adapted_unet
+                    base_model.peft_adapted_unet = self.peft_adapted_unet # Link back to StableDiffusion
 
             if self.full_train_in_out and base_model is not None:
-                print("AdaLoRA: full train in out layers enabled")
+                print("AdaLoRA: full train in out layers enabled. Cloning and replacing original modules.")
                 if self.is_pixart or self.is_auraflow or self.is_flux or self.is_lumina2 or (base_model is not None and base_model.arch == "wan21"):
                     if hasattr(unet, 'pos_embed'):
-                        self.transformer_pos_embed = copy.deepcopy(unet.pos_embed)
-                        unet.pos_embed = self.transformer_pos_embed
+                        cloned_module = copy.deepcopy(unet.pos_embed)
+                        unet.pos_embed = cloned_module
+                        self.full_train_in_out_modules["transformer_pos_embed"] = cloned_module
                     elif hasattr(unet, 'patch_embedding') and base_model.arch == "wan21":
-                        self.transformer_pos_embed = copy.deepcopy(unet.patch_embedding)
-                        unet.patch_embedding = self.transformer_pos_embed
+                        cloned_module = copy.deepcopy(unet.patch_embedding)
+                        unet.patch_embedding = cloned_module
+                        self.full_train_in_out_modules["transformer_pos_embed"] = cloned_module
                     if hasattr(unet, 'proj_out'):
-                        self.transformer_proj_out = copy.deepcopy(unet.proj_out)
-                        unet.proj_out = self.transformer_proj_out
-                else:
+                        cloned_module = copy.deepcopy(unet.proj_out)
+                        unet.proj_out = cloned_module
+                        self.full_train_in_out_modules["transformer_proj_out"] = cloned_module
+                else: # SD1.x/2.x/XL type UNet
                     if hasattr(unet, 'conv_in'):
-                        unet_conv_in: torch.nn.Conv2d = unet.conv_in
-                        self.unet_conv_in = copy.deepcopy(unet_conv_in)
-                        unet.conv_in = self.unet_conv_in
+                        cloned_module = copy.deepcopy(unet.conv_in)
+                        unet.conv_in = cloned_module
+                        self.full_train_in_out_modules["unet_conv_in"] = cloned_module
                     if hasattr(unet, 'conv_out'):
-                        unet_conv_out: torch.nn.Conv2d = unet.conv_out
-                        self.unet_conv_out = copy.deepcopy(unet_conv_out)
-                        unet.conv_out = self.unet_conv_out
+                        cloned_module = copy.deepcopy(unet.conv_out)
+                        unet.conv_out = cloned_module
+                        self.full_train_in_out_modules["unet_conv_out"] = cloned_module
 
-            self.text_encoder_loras = []
-            self.unet_loras = []
+            self.text_encoder_loras = [] # Not used for AdaLoRA via PEFT
+            self.unet_loras = [] # Not used for AdaLoRA via PEFT
             print(f"Initialized AdaLoRA for Text Encoder (PEFT): {len(self.peft_adapted_text_encoders)} adapted models.")
             print(f"Initialized AdaLoRA for U-Net (PEFT): {'adapted' if self.peft_adapted_unet else 'not adapted'}.")
             return
 
         # --- END ADALORA SPECIFIC INITIALIZATION ---
-
+        
+        # --- Start Original LoRA Initialization (if network_type is not adalora) ---
         def create_modules(
                 is_unet: bool,
                 text_encoder_idx: Optional[int],
@@ -371,17 +387,26 @@ class LoRASpecialNetwork(ToolkitNetworkMixin, LoRANetwork):
                 if current_base_model is None:
                     print("Warning: base_model is not available for selective layer processing. Skipping only_if_contains filter.")
                     return []
-                transformer_block_handles = current_base_model.get_transformer_block_names()
+                transformer_block_names = current_base_model.get_transformer_block_names() # Assuming this returns patterns like "transformer_blocks.0", "down_blocks.0.attentions.0"
                 for layer in self.only_if_contains:
-                    for handle in transformer_block_handles:
-                        module_list = getattr(root_module, handle)
-                        layers_list = [name for name, _ in module_list.named_modules()]
-                        try:
-                            pattern = re.compile(layer)
-                        except re.error:
-                            pattern = re.compile(fnmatch.translate(layer))
-                        matched_layers = [f"transformer.{handle}.{item}" for item in layers_list if pattern.match(item)]
-                        expanded_only_if_contains += matched_layers
+                    for handle in transformer_block_names: # Iterate through the base names like "transformer_blocks", "down_blocks.0.attentions"
+                        module_list = getattr(root_module, handle.split('.')[0], None) # Get the direct module for broader search
+                        if module_list is None: # If the top-level module is not found directly
+                            module_list = root_module # Fallback to root for comprehensive search
+                        
+                        # Find all named modules under the current root_module (or specific handle path)
+                        # We need to consider the full path `name` for matching against `layer`
+                        for module_path, child_module in module_list.named_modules():
+                            full_module_name = f"{handle}.{module_path}" if handle != module_path else handle # Construct full path from current handle
+
+                            try:
+                                pattern = re.compile(layer)
+                            except re.error:
+                                pattern = re.compile(fnmatch.translate(layer))
+                            
+                            if pattern.search(full_module_name): # Use search to match patterns anywhere in the name
+                                expanded_only_if_contains.append(full_module_name)
+
                 self.only_if_contains = list(set(expanded_only_if_contains))
                 print(f"Filtered only_if_contains layers: {self.only_if_contains}")
                 return self.only_if_contains
@@ -418,20 +443,26 @@ class LoRASpecialNetwork(ToolkitNetworkMixin, LoRANetwork):
             )
             loras = []
             skipped = []
-            lora_shape_dict = {}
+            lora_shape_dict = {} # This is not strictly needed for functionality but good for debugging
             for name, module in root_module.named_modules():
                 if module.__class__.__name__ in target_replace_modules:
                     for child_name, child_module in module.named_modules():
                         is_linear = child_module.__class__.__name__ in LINEAR_MODULES
                         is_conv2d = child_module.__class__.__name__ in CONV_MODULES
                         is_conv2d_1x1 = is_conv2d and child_module.kernel_size == (1, 1)
-                        lora_name = [prefix, name, child_name]
-                        lora_name = [x for x in lora_name if x and x != ""]
-                        lora_name = ".".join(lora_name)
-                        lora_name = lora_name.replace("..", ".")
-                        clean_name = lora_name
-                        # Sanitize lora_name to replace dots with underscores for PyTorch module compatibility
-                        sanitized_lora_name = clean_name.replace(".", "_")
+                        
+                        # Construct full lora_name (used for matching/filtering)
+                        lora_name_full_path = [prefix, name, child_name]
+                        lora_name_full_path = [x for x in lora_name_full_path if x and x != ""]
+                        lora_name_full_path = ".".join(lora_name_full_path)
+                        lora_name_full_path = lora_name_full_path.replace("..", ".") # Clean up potential double dots
+                        clean_name = lora_name_full_path # Use this for matching against filters
+
+                        # Actual lora_name to be used as module name (sanitized for PyTorch)
+                        # This should be consistent with how keys are mapped in get_keymap
+                        sanitized_lora_name = clean_name.replace(".", "$$") if self.peft_format else clean_name.replace(".", "_")
+
+
                         skip = False
                         if any([word in clean_name for word in self.ignore_if_contains]):
                             skip = True
@@ -443,14 +474,14 @@ class LoRASpecialNetwork(ToolkitNetworkMixin, LoRANetwork):
                             if current_base_model is not None:
                                 transformer_block_names = current_base_model.get_transformer_block_names()
                             if transformer_block_names is not None:
-                                if not any([name in clean_name for name in transformer_block_names]):
+                                if not any([name in clean_name for name in transformer_block_names]): # Match against full clean_name
                                     skip = True
-                            else:
+                            else: # Fallback if get_transformer_block_names is not available/returns None
                                 if self.is_pixart and "transformer_blocks" not in clean_name:
                                     skip = True
                                 if self.is_flux and "transformer_blocks" not in clean_name:
                                     skip = True
-                                if self.is_lumina2 and "layers$$" not in clean_name and "noise_refiner$$" not in clean_name and "context_refiner$$" not in clean_name:
+                                if self.is_lumina2 and "layers" not in clean_name and "noise_refiner" not in clean_name and "context_refiner" not in clean_name:
                                     skip = True
                                 if self.is_v3 and "transformer_blocks" not in clean_name:
                                     skip = True
@@ -460,53 +491,54 @@ class LoRASpecialNetwork(ToolkitNetworkMixin, LoRANetwork):
                                     skip = True
                                 if hasattr(root_module, 'single_blocks') and "single_blocks" not in clean_name and "double_blocks" not in clean_name:
                                     skip = True
+                        
                         if (is_linear or is_conv2d) and not skip:
                             if self.only_if_contains is not None:
-                                if not any([re.search(word, clean_name) for word in self.only_if_contains]) and \
-                                   not any([re.search(word, clean_name) for word in self.only_if_contains]):
-                                    continue
+                                if not any([re.search(word, clean_name) for word in self.only_if_contains]):
+                                    continue # Use search for regex patterns
+
                             dim = None
-                            alpha = None
+                            alpha_to_use = None # Use a different name to avoid conflict with `self.alpha`
                             if modules_dim is not None:
                                 if clean_name in modules_dim:
                                     dim = modules_dim[clean_name]
-                                    alpha = modules_alpha[clean_name]
+                                    alpha_to_use = modules_alpha[clean_name]
                             else:
                                 if is_linear or is_conv2d_1x1:
                                     dim = self.lora_dim
-                                    alpha = self.alpha
+                                    alpha_to_use = alpha # Use the local alpha from LoRASpecialNetwork.__init__
                                 elif self.conv_lora_dim is not None:
                                     dim = self.conv_lora_dim
-                                    alpha = self.conv_alpha
+                                    alpha_to_use = conv_alpha # Use the local conv_alpha from LoRASpecialNetwork.__init__
+                            
                             if dim is None or dim == 0:
                                 if is_linear or is_conv2d_1x1 or (self.conv_lora_dim is not None or conv_block_dims is not None):
                                     skipped.append(clean_name)
                                 continue
+                            
                             module_kwargs = {}
                             if self.network_type.lower() == "lokr":
                                 module_kwargs["factor"] = self.network_config.lokr_factor
                             lora = module_class(
-                                sanitized_lora_name,  # Use sanitized name for PyTorch module
+                                sanitized_lora_name, # Use sanitized name for PyTorch module
                                 child_module,
                                 self.multiplier,
                                 dim,
-                                alpha,
+                                alpha_to_use, # Pass the resolved alpha
                                 dropout=dropout,
                                 rank_dropout=rank_dropout,
                                 module_dropout=module_dropout,
                                 network=self,
-                                parent=module,
+                                parent=module, # This `parent` argument is not part of LoRAModule init, remove or add it.
                                 use_bias=use_bias,
                                 **module_kwargs
                             )
                             loras.append(lora)
-                            if self.network_type.lower() == "lokr":
-                                try:
-                                    lora_shape_dict[clean_name] = [list(lora.lokr_w1.weight.shape), list(lora.lokr_w2.weight.shape)]
-                                except:
-                                    pass
-                            else:
-                                lora_shape_dict[clean_name] = [list(lora.lora_down.weight.shape), list(lora.lora_up.weight.shape)]
+                            # Shape dict for debugging/info, not critical
+                            # if self.network_type.lower() == "lokr":
+                            #     try: lora_shape_dict[clean_name] = [list(lora.lokr_w1.weight.shape), list(lora.lokr_w2.weight.shape)]
+                            #     except: pass
+                            # else: lora_shape_dict[clean_name] = [list(lora.lora_down.weight.shape), list(lora.lora_up.weight.shape)]
             return loras, skipped
 
         text_encoders = text_encoder if isinstance(text_encoder, list) else [text_encoder]
@@ -514,9 +546,7 @@ class LoRASpecialNetwork(ToolkitNetworkMixin, LoRANetwork):
         skipped_te = []
         if train_text_encoder:
             for i, te_model in enumerate(text_encoders):
-                if not use_text_encoder_1 and i == 0:
-                    continue
-                if not use_text_encoder_2 and i == 1:
+                if (not use_text_encoder_1 and i == 0) or (not use_text_encoder_2 and i == 1):
                     continue
                 if len(text_encoders) > 1:
                     index = i + 1
@@ -570,41 +600,32 @@ class LoRASpecialNetwork(ToolkitNetworkMixin, LoRANetwork):
             assert lora.lora_name not in names, f"duplicated lora name: {lora.lora_name}"
             names.add(lora.lora_name)
 
-        if self.full_train_in_out:
-            print("full train in out")
-            if self.is_pixart:
-                transformer: PixArtTransformer2DModel = unet
-                if hasattr(transformer, 'pos_embed'):
-                    self.transformer_pos_embed = copy.deepcopy(transformer.pos_embed)
-                    transformer.pos_embed = self.transformer_pos_embed
-                if hasattr(transformer, 'proj_out'):
-                    self.transformer_proj_out = copy.deepcopy(transformer.proj_out)
-                    transformer.proj_out = self.transformer_proj_out
-            elif self.is_auraflow:
-                transformer: AuraFlowTransformer2DModel = unet
-                if hasattr(transformer, 'pos_embed'):
-                    self.transformer_pos_embed = copy.deepcopy(transformer.pos_embed)
-                    transformer.pos_embed = self.transformer_pos_embed
-                if hasattr(transformer, 'proj_out'):
-                    self.transformer_proj_out = copy.deepcopy(transformer.proj_out)
-                    transformer.proj_out = self.transformer_proj_out
-            elif base_model is not None and base_model.arch == "wan21":
-                transformer: WanTransformer3DModel = unet
-                if hasattr(transformer, 'patch_embedding'):
-                    self.transformer_pos_embed = copy.deepcopy(transformer.patch_embedding)
-                    transformer.patch_embedding = self.transformer_pos_embed
-                if hasattr(transformer, 'proj_out'):
-                    self.transformer_proj_out = copy.deepcopy(transformer.proj_out)
-                    transformer.proj_out = self.transformer_proj_out
-            else:
+        if self.full_train_in_out: # For non-AdaLoRA, this is handled here
+            print("full train in out enabled. Cloning and replacing original modules.")
+            # Store cloned modules in ToolkitNetworkMixin's full_train_in_out_modules for access
+            if self.is_pixart or self.is_auraflow or self.is_flux or self.is_lumina2 or (base_model is not None and base_model.arch == "wan21"):
+                if hasattr(unet, 'pos_embed'):
+                    cloned_module = copy.deepcopy(unet.pos_embed)
+                    unet.pos_embed = cloned_module
+                    self.full_train_in_out_modules["transformer_pos_embed"] = cloned_module
+                elif hasattr(unet, 'patch_embedding') and base_model.arch == "wan21":
+                    cloned_module = copy.deepcopy(unet.patch_embedding)
+                    unet.patch_embedding = cloned_module
+                    self.full_train_in_out_modules["transformer_pos_embed"] = cloned_module
+                if hasattr(unet, 'proj_out'):
+                    cloned_module = copy.deepcopy(unet.proj_out)
+                    unet.proj_out = cloned_module
+                    self.full_train_in_out_modules["transformer_proj_out"] = cloned_module
+            else: # SD1.x/2.x/XL type UNet
                 if hasattr(unet, 'conv_in'):
-                    unet_conv_in: torch.nn.Conv2d = unet.conv_in
-                    self.unet_conv_in = copy.deepcopy(unet_conv_in)
-                    unet.conv_in = self.unet_conv_in
+                    cloned_module = copy.deepcopy(unet.conv_in)
+                    unet.conv_in = cloned_module
+                    self.full_train_in_out_modules["unet_conv_in"] = cloned_module
                 if hasattr(unet, 'conv_out'):
-                    unet_conv_out: torch.nn.Conv2d = unet.conv_out
-                    self.unet_conv_out = copy.deepcopy(unet_conv_out)
-                    unet.conv_out = self.unet_conv_out
+                    cloned_module = copy.deepcopy(unet.conv_out)
+                    unet.conv_out = cloned_module
+                    self.full_train_in_out_modules["unet_conv_out"] = cloned_module
+        # --- End Original LoRA Initialization ---
 
     def apply_to(self, text_encoder: Union[List[CLIPTextModel], CLIPTextModel], unet, **kwargs):
         # For AdaLoRA, the models are already adapted in __init__, so skip
@@ -614,12 +635,11 @@ class LoRASpecialNetwork(ToolkitNetworkMixin, LoRANetwork):
 
         # Filter out kwargs that LoRANetwork.apply_to does not accept
         valid_kwargs = {}
-        for key in kwargs:
-            if key in ['multiplier']:  # LoRANetwork.apply_to accepts multiplier
-                valid_kwargs[key] = kwargs[key]
-
-        # Call parent LoRANetwork.apply_to with only valid arguments
-        super().apply_to(text_encoder, unet, **valid_kwargs)
+        # LoRANetwork.apply_to usually only takes text_encoder, unet, and multiplier
+        # but the signature shows train_text_encoder and train_unet as positional args.
+        # It's safer to just pass text_encoder, unet and let the super call handle the rest.
+        # For consistency with base class, just call super().apply_to.
+        super().apply_to(text_encoder, unet, self.multiplier) # Pass current multiplier
 
     def prepare_optimizer_params(self, text_encoder_lr, unet_lr, default_lr):
         all_params = []
@@ -630,55 +650,36 @@ class LoRASpecialNetwork(ToolkitNetworkMixin, LoRANetwork):
                 unet_params = [p for p in self.peft_adapted_unet.parameters() if p.requires_grad]
                 if unet_params:
                     all_params.append({"lr": unet_lr, "params": unet_params, "weight_decay": 0.0})
-                # Debug: Check for parameters with requires_grad=True
-                print(f"UNet trainable parameters: {len(unet_params)}")
-                for name, param in self.peft_adapted_unet.named_parameters():
-                    if param.requires_grad:
-                        print(f"UNet trainable param: {name}, shape: {param.shape}")
+                # print(f"UNet trainable parameters: {len(unet_params)}") # Debug for verbose output
+                # for name, param in self.peft_adapted_unet.named_parameters():
+                #     if param.requires_grad: print(f"UNet trainable param: {name}, shape: {param.shape}")
             for i, te_model in enumerate(self.peft_adapted_text_encoders):
                 te_params = [p for p in te_model.parameters() if p.requires_grad]
                 if te_params:
                     all_params.append({"lr": text_encoder_lr, "params": te_params, "weight_decay": 0.0})
-                # Debug: Check for parameters with requires_grad=True
-                print(f"Text Encoder {i} trainable parameters: {len(te_params)}")
-                for name, param in te_model.named_parameters():
-                    if param.requires_grad:
-                        print(f"Text Encoder {i} trainable param: {name}, shape: {param.shape}")
-            if self.full_train_in_out:
-                base_model = self.base_model_ref() if self.base_model_ref is not None else None
-                if self.is_pixart or self.is_auraflow or self.is_flux or self.is_lumina2 or (base_model is not None and base_model.arch == "wan21"):
-                    if hasattr(self, 'transformer_pos_embed') and self.transformer_pos_embed is not None:
-                        pos_embed_params = list(self.transformer_pos_embed.parameters())
-                        all_params.append({"lr": unet_lr, "params": pos_embed_params})
-                        print(f"Transformer pos_embed trainable parameters: {len(pos_embed_params)}")
-                    if hasattr(self, 'transformer_proj_out') and self.transformer_proj_out is not None:
-                        proj_out_params = list(self.transformer_proj_out.parameters())
-                        all_params.append({"lr": unet_lr, "params": proj_out_params})
-                        print(f"Transformer proj_out trainable parameters: {len(proj_out_params)}")
-                else:
-                    if hasattr(self, 'unet_conv_in') and self.unet_conv_in is not None:
-                        conv_in_params = list(self.unet_conv_in.parameters())
-                        all_params.append({"lr": unet_lr, "params": conv_in_params})
-                        print(f"UNet conv_in trainable parameters: {len(conv_in_params)}")
-                    if hasattr(self, 'unet_conv_out') and self.unet_conv_out is not None:
-                        conv_out_params = list(self.unet_conv_out.parameters())
-                        all_params.append({"lr": unet_lr, "params": conv_out_params})
-                        print(f"UNet conv_out trainable parameters: {len(conv_out_params)}")
+                # print(f"Text Encoder {i} trainable parameters: {len(te_params)}") # Debug for verbose output
+                # for name, param in te_model.named_parameters():
+                #     if param.requires_grad: print(f"Text Encoder {i} trainable param: {name}, shape: {param.shape}")
+            
+            # Add full_train_in_out modules' parameters
+            for module_name, module_instance in self.full_train_in_out_modules.items():
+                if isinstance(module_instance, nn.Module):
+                    module_params = [p for p in module_instance.parameters() if p.requires_grad]
+                    if module_params:
+                        all_params.append({"lr": unet_lr, "params": module_params}) # Assuming unet_lr for these
+                        # print(f"{module_name} trainable parameters: {len(module_params)}") # Debug for verbose output
             return all_params
 
+        # For non-AdaLoRA, delegate to super().prepare_optimizer_params (from LoRANetwork)
         all_params = super().prepare_optimizer_params(text_encoder_lr, unet_lr, default_lr)
-        if self.full_train_in_out:
-            base_model = self.base_model_ref() if self.base_model_ref is not None else None
-            if self.is_pixart or self.is_auraflow or self.is_flux or self.is_lumina2 or (base_model is not None and base_model.arch == "wan21"):
-                if hasattr(self, 'transformer_pos_embed') and self.transformer_pos_embed is not None:
-                    all_params.append({"lr": unet_lr, "params": list(self.transformer_pos_embed.parameters())})
-                if hasattr(self, 'transformer_proj_out') and self.transformer_proj_out is not None:
-                    all_params.append({"lr": unet_lr, "params": list(self.transformer_proj_out.parameters())})
-            else:
-                if hasattr(self, 'unet_conv_in') and self.unet_conv_in is not None:
-                    all_params.append({"lr": unet_lr, "params": list(self.unet_conv_in.parameters())})
-                if hasattr(self, 'unet_conv_out') and self.unet_conv_out is not None:
-                    all_params.append({"lr": unet_lr, "params": list(self.unet_conv_out.parameters())})
+        
+        # Add full_train_in_out modules' parameters for non-AdaLoRA
+        # This duplicates logic from above but keeps it conditional per network type for clarity
+        for module_name, module_instance in self.full_train_in_out_modules.items():
+            if isinstance(module_instance, nn.Module):
+                module_params = [p for p in module_instance.parameters() if p.requires_grad]
+                if module_params:
+                    all_params.append({"lr": unet_lr, "params": module_params})
         return all_params
 
     def update_and_allocate_adalora(self, step_num: int):
@@ -693,11 +694,11 @@ class LoRASpecialNetwork(ToolkitNetworkMixin, LoRANetwork):
                 except TypeError as e:
                     if "unsupported operand type(s) for *" in str(e):
                         print(f"Warning: Skipping UNet update_and_allocate due to None gradients at step {step_num}: {e}")
-                        none_grad_params = [(name, param) for name, param in adalora_tuner_unet.named_parameters() if param.grad is None and param.requires_grad]
-                        for name, param in none_grad_params:
-                            print(f"Parameter with None gradient: {name}, shape: {param.shape}")
-                        if not none_grad_params:
-                            print("No parameters with None gradients found.")
+                        # none_grad_params = [(name, param) for name, param in adalora_tuner_unet.named_parameters() if param.grad is None and param.requires_grad]
+                        # for name, param in none_grad_params:
+                        #     print(f"Parameter with None gradient: {name}, shape: {param.shape}")
+                        # if not none_grad_params:
+                        #     print("No parameters with None gradients found.")
                     else:
                         raise e
             else:
@@ -712,11 +713,11 @@ class LoRASpecialNetwork(ToolkitNetworkMixin, LoRANetwork):
                     except TypeError as e:
                         if "unsupported operand type(s) for *" in str(e):
                             print(f"Warning: Skipping Text Encoder {i} update_and_allocate due to None gradients at step {step_num}: {e}")
-                            none_grad_params = [(name, param) for name, param in adalora_tuner_te.named_parameters() if param.grad is None and param.requires_grad]
-                            for name, param in none_grad_params:
-                                print(f"Parameter with None gradient: {name}, shape: {param.shape}")
-                            if not none_grad_params:
-                                print("No parameters with None gradients found.")
+                            # none_grad_params = [(name, param) for name, param in adalora_tuner_te.named_parameters() if param.grad is None and param.requires_grad]
+                            # for name, param in none_grad_params:
+                            #     print(f"Parameter with None gradient: {name}, shape: {param.shape}")
+                            # if not none_grad_params:
+                            #     print("No parameters with None gradients found.")
                         else:
                             raise e
                 else:
