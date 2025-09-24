@@ -1,0 +1,125 @@
+job: extension
+config:
+  name: aa_and_dp_qwenimage_2
+  process:
+  - type: sd_trainer
+    training_folder: /root/shivanvitha/dev/ai-toolkit/output
+    log_dir: /root/shivanvitha/dev/ai-toolkit/output/aa_and_dp_qwenimage_2/tensorboard
+    device: cuda
+    trigger_word: null
+    performance_log_every: 10
+    network:
+      type: lora
+      linear: 32
+      linear_alpha: 32
+      conv: 16
+      conv_alpha: 16
+      lokr_full_rank: true
+      lokr_factor: -1
+      network_kwargs:
+        ignore_if_contains: []
+    save:
+      dtype: bf16
+      save_every: 250
+      start_saving_after: 1000
+      max_step_saves_to_keep: 4
+      save_format: diffusers
+      push_to_hub: false
+    datasets:
+    - folder_path: /root/shivanvitha/ai-toolkit/datasets/dp_aa22
+      control_path: null
+      mask_path: null
+      mask_min_value: 0.1
+      trigger_token: '[DP]'
+      initializer_concept: A 35 year old Indian woman, 5 feet 9 inches tall, dusky skin tone, sharp nose, sharp jawline, big eyes, slim build
+      default_caption: ''
+      caption_ext: txt
+      caption_dropout_rate: 0
+      cache_latents_to_disk: false
+      is_reg: false
+      network_weight: 1
+      resolution:
+      - 512
+      - 768
+      - 1024
+      controls: []
+      shrink_video_to_frames: true
+      num_frames: 1
+      do_i2v: true
+    - folder_path: /root/shivanvitha/ai-toolkit/datasets/allu_aa22
+      control_path: null
+      mask_path: null
+      mask_min_value: 0.1
+      trigger_token: '[AA]'
+      initializer_concept: A 39 year old Indian man, 5 feet 9 inches tall, sharp facial features, dusky skin tone, beard and mustache, strong build
+      default_caption: ''
+      caption_ext: txt
+      caption_dropout_rate: 0
+      cache_latents_to_disk: false
+      is_reg: false
+      network_weight: 1
+      resolution:
+      - 512
+      - 768
+      - 1024
+      controls: []
+      shrink_video_to_frames: true
+      num_frames: 1
+      do_i2v: true
+    train:
+      batch_size: 2
+      bypass_guidance_embedding: false
+      steps: 7000
+      gradient_accumulation: 1
+      train_unet: true
+      train_text_encoder: false
+      gradient_checkpointing: true
+      noise_scheduler: flowmatch
+      optimizer: adamw
+      timestep_type: weighted
+      content_or_style: balanced
+      optimizer_params:
+        weight_decay: 0.0001
+      enable_ti: true
+      enable_ttb: false
+      early_stopping_num_epochs: 60
+      unload_text_encoder: false
+      cache_text_embeddings: false
+      lr: 0.0001
+      ema_config:
+        use_ema: false
+        ema_decay: 0.99
+      skip_first_sample: false
+      disable_sampling: false
+      dtype: bf16
+      diff_output_preservation: false
+      diff_output_preservation_multiplier: 1
+      diff_output_preservation_class: person
+    model:
+      name_or_path: Qwen/Qwen-Image
+      quantize: false
+      qtype: qfloat8
+      quantize_te: false
+      qtype_te: qfloat8
+      arch: qwen_image
+      low_vram: false
+      model_kwargs: {}
+    sample:
+      sampler: flowmatch
+      sample_every: 250
+      width: 1664
+      height: 928
+      samples:
+      - prompt: A photo of (([DP] woman)) walking in the front with (([AA] man)) carrying shopping backs behind her.
+      - prompt: A medium-length portrait of (([DP] woman)) and (([AA] man)) looking at the camera, terrified and worried, both wearing silver suits.
+      - prompt: A full length shot of (([AA] man)) and (([DP] woman)) in traditional Indian clothes in front of a clothing store in New York
+      neg: ''
+      seed: 42
+      walk_seed: true
+      guidance_scale: 4
+      sample_steps: 25
+      num_frames: 1
+      fps: 1
+meta:
+  name: aa_and_dp_qwenimage_2
+  version: '1.0'

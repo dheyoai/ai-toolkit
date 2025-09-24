@@ -146,6 +146,8 @@ class LoRMConfig:
 NetworkType = Literal['lora', 'locon', 'lorm', 'lokr']
 
 
+# In config_modules.py
+
 class NetworkConfig:
     def __init__(self, **kwargs):
         self.type: NetworkType = kwargs.get('type', 'lora')
@@ -163,6 +165,12 @@ class NetworkConfig:
         self.conv_alpha: float = kwargs.get('conv_alpha', self.conv)
         self.dropout: Union[float, None] = kwargs.get('dropout', None)
         self.network_kwargs: dict = kwargs.get('network_kwargs', {})
+
+        # --- START LoRA+ additions ---
+        self.loraplus_enabled: bool = kwargs.get('loraplus_enabled', False)
+        # Default lambda is 1.0, meaning A and B have the same LR (standard LoRA behavior)
+        self.loraplus_lambda_lr: float = kwargs.get('loraplus_lambda_lr', 1.0)
+        # --- END LoRA+ additions ---
 
         self.lorm_config: Union[LoRMConfig, None] = None
         lorm = kwargs.get('lorm', None)
