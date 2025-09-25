@@ -77,7 +77,17 @@ def flush():
     torch.cuda.empty_cache()
     gc.collect()
 
+def copy_files(src_dir, dst_dir, prefix=None):
+    for fname in os.listdir(src_dir):
+        src_path = os.path.join(src_dir, fname)
+        if os.path.isfile(src_path):
+            if prefix: 
+                dst_path = os.path.join(dst_dir, f"{prefix}_{fname}")
+            else:
+                dst_path = os.path.join(dst_dir, fname)
+            shutil.copy2(src_path, dst_path)
 
+                    
 class BaseSDTrainProcess(BaseTrainProcess):
 
     def __init__(self, process_id: int, job, config: OrderedDict, custom_pipeline=None):
@@ -145,7 +155,27 @@ class BaseSDTrainProcess(BaseTrainProcess):
         # import pdb; pdb.set_trace()
         self.enable_ti = self.train_config.enable_ti
         self.enable_ttb = self.train_config.enable_ti
+        self.enable_mixed_batching = self.train_config.enable_mixed_batching
+
         raw_datasets = self.get_conf('datasets', None)
+        # import pdb; pdb.set_trace()
+
+        ##########
+        self.all_triggers, self.all_initializer_concepts = [], []
+        for dataset in raw_datasets:
+            self.all_triggers.append(dataset["trigger_token"])
+            self.all_initializer_concepts.append(dataset["initializer_concept"])
+
+        if self.enable_mixed_batching:
+            os.makedirs(f"{self.save_root}/temp", exist_ok=True)
+
+            for idx, dataset in enumerate(raw_datasets):
+                copy_files(dataset["folder_path"], f"{self.save_root}/temp", prefix=f"dataset_{idx}")
+
+            raw_datasets[0]["folder_path"] = f"{self.save_root}/temp"
+            raw_datasets = [raw_datasets[0]]
+        ############
+
         if raw_datasets is not None and len(raw_datasets) > 0:
             raw_datasets = preprocess_dataset_raw_config(raw_datasets)
         self.datasets = None
@@ -186,9 +216,8 @@ class BaseSDTrainProcess(BaseTrainProcess):
         # import pdb; pdb.set_trace()
         # embedding_raw = self.get_conf('embedding', None)
         if self.enable_ti:
-            all_datasets = self.get_conf("datasets", None)
-            for dataset in all_datasets:
-                embedding_raw = {"trigger": dataset["trigger_token"], "init_words": dataset["initializer_concept"]}
+            for trigger_token, initializer_concept in zip(self.all_triggers, self.all_initializer_concepts):
+                embedding_raw = {"trigger": trigger_token, "init_words": initializer_concept}
                 self.embed_config.append(EmbeddingConfig(**embedding_raw))
         else:
             self.embed_config = None
@@ -2282,11 +2311,10 @@ class BaseSDTrainProcess(BaseTrainProcess):
                         try:
                             with self.timer('get_batch'):
                                 batch = next(dataloader_iterator)
-                                # num_steps_in_epoch = sum([len(dataloader.dataset.datasets[j].batch_indices) for j in range(len(dataloader.dataset.datasets))])
+                                # import pdb; pdb.set_trace()
                                 num_steps_in_epoch = len(dataloader)
-                                # if self.accelerator.is_main_process:
-                                #     import pdb; pdb.set_trace()
                                 if (self.step_num + 1) % num_steps_in_epoch == 0:
+                                    print(f"Current step: {self.step_num} | Num steps in epoch: {num_steps_in_epoch}")
                                     end_epoch = True
                                     if self.accelerator.is_main_process:
                                         print(f"This is the last iteration of epoch-{self.epoch_num}")
