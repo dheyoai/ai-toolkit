@@ -1,10 +1,10 @@
 job: extension
 config:
-  name: aa_and_dp_qwenimage_2
+  name: aa_and_dp_bs_2_lr_0001_pure
   process:
   - type: sd_trainer
-    training_folder: /root/shivanvitha/dev/ai-toolkit/output
-    log_dir: /root/shivanvitha/dev/ai-toolkit/output/aa_and_dp_qwenimage_2/tensorboard
+    training_folder: /workspace/shivanvitha/ai-toolkit/output
+    log_dir: /workspace/shivanvitha/ai-toolkit/output/aa_and_dp_bs_2_lr_0001_pure/tensorboard
     device: cuda
     trigger_word: null
     performance_log_every: 10
@@ -21,17 +21,18 @@ config:
     save:
       dtype: bf16
       save_every: 250
-      start_saving_after: 1000
+      start_saving_after: 50
       max_step_saves_to_keep: 4
       save_format: diffusers
       push_to_hub: false
     datasets:
-    - folder_path: /root/shivanvitha/ai-toolkit/datasets/dp_aa22
+    - folder_path: /workspace/shivanvitha/ai-toolkit/datasets/dp_1024
       control_path: null
       mask_path: null
       mask_min_value: 0.1
       trigger_token: '[DP]'
-      initializer_concept: A 35 year old Indian woman, 5 feet 9 inches tall, dusky skin tone, sharp nose, sharp jawline, big eyes, slim build
+      initializer_concept: A 35 year old Indian woman, 5 feet 9 inches tall, dusky
+        skin tone, sharp nose, sharp jawline, big eyes, slim build
       default_caption: ''
       caption_ext: txt
       caption_dropout_rate: 0
@@ -39,19 +40,18 @@ config:
       is_reg: false
       network_weight: 1
       resolution:
-      - 512
-      - 768
       - 1024
       controls: []
       shrink_video_to_frames: true
       num_frames: 1
       do_i2v: true
-    - folder_path: /root/shivanvitha/ai-toolkit/datasets/allu_aa22
+    - folder_path: /workspace/shivanvitha/ai-toolkit/datasets/aa_1024
       control_path: null
       mask_path: null
       mask_min_value: 0.1
       trigger_token: '[AA]'
-      initializer_concept: A 39 year old Indian man, 5 feet 9 inches tall, sharp facial features, dusky skin tone, beard and mustache, strong build
+      initializer_concept: A 39 year old Indian man, 5 feet 9 inches tall, sharp facial
+        features, dusky skin tone, beard and mustache, strong build
       default_caption: ''
       caption_ext: txt
       caption_dropout_rate: 0
@@ -59,8 +59,6 @@ config:
       is_reg: false
       network_weight: 1
       resolution:
-      - 512
-      - 768
       - 1024
       controls: []
       shrink_video_to_frames: true
@@ -82,7 +80,8 @@ config:
         weight_decay: 0.0001
       enable_ti: true
       enable_ttb: false
-      early_stopping_num_epochs: 60
+      enable_mixed_batching: false
+      early_stopping_num_epochs: 40
       unload_text_encoder: false
       cache_text_embeddings: false
       lr: 0.0001
@@ -110,9 +109,12 @@ config:
       width: 1664
       height: 928
       samples:
-      - prompt: A photo of (([DP] woman)) walking in the front with (([AA] man)) carrying shopping backs behind her.
-      - prompt: A medium-length portrait of (([DP] woman)) and (([AA] man)) looking at the camera, terrified and worried, both wearing silver suits.
-      - prompt: A full length shot of (([AA] man)) and (([DP] woman)) in traditional Indian clothes in front of a clothing store in New York
+      - prompt: A photo of (([DP] woman)) walking in the front with (([AA] man)) carrying
+          shopping backs behind her.
+      - prompt: A medium-length portrait of (([DP] woman)) and (([AA] man)) looking
+          at the camera, terrified and worried, both wearing silver suits.
+      - prompt: A full length shot of (([AA] man)) and (([DP] woman)) in traditional
+          Indian clothes in front of a clothing store in New York
       neg: ''
       seed: 42
       walk_seed: true
@@ -121,5 +123,5 @@ config:
       num_frames: 1
       fps: 1
 meta:
-  name: aa_and_dp_qwenimage_2
+  name: aa_and_dp_bs_2_lr_0001_pure
   version: '1.0'
