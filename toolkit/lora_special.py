@@ -711,7 +711,6 @@ class LoRASpecialNetwork(ToolkitNetworkMixin, LoRANetwork):
             return super().prepare_optimizer_params(text_encoder_lr, unet_lr, default_lr)
         # --- END LoRA+ additions ---
 
-    # --- START of original methods (from your provided context) ---
     def get_keymap(self: 'LoRASpecialNetwork', force_weight_mapping=False):
         use_weight_mapping = False
 
