@@ -14,6 +14,7 @@ from transformers import CLIPTextModel
 from toolkit.paths import KEYMAPS_ROOT
 from toolkit.models.lokr import LokrModule
 from toolkit.models.DoRA import DoRAModule
+from toolkit.metadata import add_model_hash_to_meta
 
 from .config_modules import NetworkConfig
 from .lorm import count_parameters
