@@ -143,7 +143,7 @@ class LoRMConfig:
         })
 
 
-NetworkType = Literal['lora', 'locon', 'lorm', 'lokr']
+NetworkType = Literal['lora', 'locon', 'lorm', 'lokr', 'loraplus'] 
 
 
 # In config_modules.py
@@ -166,11 +166,10 @@ class NetworkConfig:
         self.dropout: Union[float, None] = kwargs.get('dropout', None)
         self.network_kwargs: dict = kwargs.get('network_kwargs', {})
 
-        # --- START LoRA+ additions ---
+        # --- START LoRA+ specific parameters ---
         self.loraplus_enabled: bool = kwargs.get('loraplus_enabled', False)
-        # Default lambda is 1.0, meaning A and B have the same LR (standard LoRA behavior)
         self.loraplus_lambda_lr: float = kwargs.get('loraplus_lambda_lr', 1.0)
-        # --- END LoRA+ additions ---
+        # --- END LoRA+ specific parameters ---
 
         self.lorm_config: Union[LoRMConfig, None] = None
         lorm = kwargs.get('lorm', None)
@@ -195,6 +194,11 @@ class NetworkConfig:
         # -1 automatically finds the largest factor
         self.lokr_factor = kwargs.get('lokr_factor', -1)
 
+        if self.type.lower() == 'loraplus':
+            if not self.loraplus_enabled: # Only print if it wasn't already explicitly enabled
+                print(f"Network type set to '{self.type}', implicitly enabling LoRA+ functionality.")
+            self.loraplus_enabled = True # Enforce LoRA+ if type is 'loraplus'
+        # --- END LoRA+ activation logic ---
 
 AdapterTypes = Literal['t2i', 'ip', 'ip+', 'clip', 'ilora', 'photo_maker', 'control_net', 'control_lora', 'i2v']
 

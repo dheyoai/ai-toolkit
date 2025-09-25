@@ -6,11 +6,12 @@ import os
 import re
 import fnmatch
 import sys
+from collections import OrderedDict 
 from typing import List, Optional, Dict, Type, Union, Any
 import torch
 from diffusers import UNet2DConditionModel, PixArtTransformer2DModel, AuraFlowTransformer2DModel, WanTransformer3DModel
 from transformers import CLIPTextModel
-# Assuming these imports are correct and available in your environment
+from toolkit.paths import KEYMAPS_ROOT
 from toolkit.models.lokr import LokrModule
 from toolkit.models.DoRA import DoRAModule
 
@@ -209,8 +210,8 @@ class LoRASpecialNetwork(ToolkitNetworkMixin, LoRANetwork):
         """
         # call the parent of the parent we are replacing (LoRANetwork) init
         torch.nn.Module.__init__(self)
-        # Pass network_config to ToolkitNetworkMixin's init as it now holds loraplus flags
-        self.network_config: NetworkConfig = kwargs.get("network_config", None) # Store here explicitly for mixin
+        _network_config_from_kwargs = kwargs.pop("network_config", None)
+        self.network_config: NetworkConfig = _network_config_from_kwargs
         ToolkitNetworkMixin.__init__(
             self,
             train_text_encoder=train_text_encoder,

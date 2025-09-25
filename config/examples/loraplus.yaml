@@ -9,17 +9,14 @@ config:
     trigger_word: null
     performance_log_every: 10
     network:
-      type: lora
+      type: loraplus
       linear: 32
       linear_alpha: 32
       conv: 16
       conv_alpha: 16
       lokr_full_rank: true
       lokr_factor: -1
-      # --- START LoRA+ config for AB LoRA ---
-      loraplus_enabled: true
-      loraplus_lambda_lr: 4.0 # Set your desired lambda_lr here, e.g., 2.0, 4.0, 8.0
-      # --- END LoRA+ config ---
+      loraplus_lambda_lr: 4.0 
       network_kwargs:
         ignore_if_contains: []
     save:
@@ -35,7 +32,7 @@ config:
       mask_path: null
       mask_min_value: 0.1
       trigger_token: '[AB]'
-      initializer_concept: A 34 year old Indian woman, 5 feet 1 inch tall, fair skin, slim build, slim jawline, dimples on cheeks
+      initializer_concept: "A 34 year old Indian woman, 5 feet 1 inch tall, fair skin, slim build, slim jawline, dimples on cheeks"
       default_caption: ''
       caption_ext: txt
       caption_dropout_rate: 0
@@ -94,10 +91,9 @@ config:
       width: 1664
       height: 928
       samples:
-      - prompt: A close-up shot of (([AB] woman)) in a rugged leather jacket, standing
-          against a graffiti wall.
-      - prompt: A medium-length portrait of (([AB] woman)) in a garden.
-      - prompt: A full length shot of (([AB] woman)) wearing a white shirt, looking furious.
+      - prompt: "A close-up shot of (([AB] woman)) in a rugged leather jacket, standing against a graffiti wall."
+      - prompt: "A medium-length portrait of (([AB] woman)) in a garden."
+      - prompt: "A full length shot of (([AB] woman)) wearing a white shirt, looking furious."
       neg: ''
       seed: 42
       walk_seed: true
