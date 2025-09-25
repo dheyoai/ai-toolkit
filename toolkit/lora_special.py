@@ -6,18 +6,21 @@ import os
 import re
 import fnmatch
 import sys
-from typing import List, Optional, Dict, Type, Union
+from collections import OrderedDict 
+from typing import List, Optional, Dict, Type, Union, Any
 import torch
 from diffusers import UNet2DConditionModel, PixArtTransformer2DModel, AuraFlowTransformer2DModel, WanTransformer3DModel
 from transformers import CLIPTextModel
+from toolkit.paths import KEYMAPS_ROOT
 from toolkit.models.lokr import LokrModule
+from toolkit.models.DoRA import DoRAModule
+from toolkit.metadata import add_model_hash_to_meta
 
 from .config_modules import NetworkConfig
 from .lorm import count_parameters
 from .network_mixins import ToolkitNetworkMixin, ToolkitModuleMixin, ExtractableModuleMixin
 
 from toolkit.kohya_lora import LoRANetwork
-from toolkit.models.DoRA import DoRAModule
 from typing import TYPE_CHECKING
 
 from pathlib import Path
@@ -59,6 +62,10 @@ class LoRAModule(ToolkitModuleMixin, ExtractableModuleMixin, torch.nn.Module):
             module_dropout=None,
             network: 'LoRASpecialNetwork' = None,
             use_bias: bool = False,
+            # --- START LoRA+ additions to LoRAModule __init__ ---
+            loraplus_enabled: bool = False,
+            loraplus_lambda_lr: float = 1.0,
+            # --- END LoRA+ additions ---
             **kwargs
     ):
         self.can_merge_in = True
@@ -113,6 +120,11 @@ class LoRAModule(ToolkitModuleMixin, ExtractableModuleMixin, torch.nn.Module):
         self.rank_dropout = rank_dropout
         self.module_dropout = module_dropout
         self.is_checkpointing = False
+
+        # --- START LoRA+ additions to LoRAModule properties ---
+        self.loraplus_enabled = loraplus_enabled
+        self.loraplus_lambda_lr = loraplus_lambda_lr
+        # --- END LoRA+ additions ---
 
     def apply_to(self):
         self.org_forward = self.org_module[0].forward
@@ -183,6 +195,10 @@ class LoRASpecialNetwork(ToolkitNetworkMixin, LoRANetwork):
             is_assistant_adapter: bool = False,
             is_transformer: bool = False,
             base_model: 'StableDiffusion' = None,
+            # --- START LoRA+ additions to LoRASpecialNetwork __init__ ---
+            loraplus_enabled: bool = False,
+            loraplus_lambda_lr: float = 1.0,
+            # --- END LoRA+ additions ---
             **kwargs
     ) -> None:
         """
@@ -195,6 +211,8 @@ class LoRASpecialNetwork(ToolkitNetworkMixin, LoRANetwork):
         """
         # call the parent of the parent we are replacing (LoRANetwork) init
         torch.nn.Module.__init__(self)
+        _network_config_from_kwargs = kwargs.pop("network_config", None)
+        self.network_config: NetworkConfig = _network_config_from_kwargs
         ToolkitNetworkMixin.__init__(
             self,
             train_text_encoder=train_text_encoder,
@@ -202,8 +220,10 @@ class LoRASpecialNetwork(ToolkitNetworkMixin, LoRANetwork):
             is_sdxl=is_sdxl,
             is_v2=is_v2,
             is_lorm=is_lorm,
+            network_config=self.network_config, # Pass it to the mixin
             **kwargs
         )
+
         if ignore_if_contains is None:
             ignore_if_contains = []
         self.ignore_if_contains = ignore_if_contains
@@ -242,11 +262,15 @@ class LoRASpecialNetwork(ToolkitNetworkMixin, LoRANetwork):
         elif self.network_type.lower() == "lokr":
             self.module_class = LokrModule
             module_class = LokrModule
-        self.network_config: NetworkConfig = kwargs.get("network_config", None)
+        # self.network_config: NetworkConfig = kwargs.get("network_config", None) # Removed, handled above
 
         self.peft_format = peft_format
         self.is_transformer = is_transformer
         
+        # --- START LoRA+ additions to LoRASpecialNetwork properties ---
+        self.loraplus_enabled = loraplus_enabled
+        self.loraplus_lambda_lr = loraplus_lambda_lr
+        # --- END LoRA+ additions ---
 
         # always do peft for flux only for now
         if self.is_flux or self.is_v3 or self.is_lumina2 or is_transformer:
@@ -293,27 +317,18 @@ class LoRASpecialNetwork(ToolkitNetworkMixin, LoRANetwork):
 
             #############
             ### need to handle regex for self.only_if_contains!!!
-            # if self.only_if_contains:
-            #     expanded_only_if_contains = []
-            #     for layers in self.only_if_contains:
-            #         if  ".*." in layers:
-            #             transformer_block_names = base_model.get_transformer_block_names()
-            #             # num_blocks = len(root_module.transformer_blocks)
-            #             for block_name in transformer_block_names:
-            #                 blocks = getattr(root_module, block_name) 
-            #                 num_blocks = len(blocks)
-            #                 for block_id in range(num_blocks):
-            #                     expanded_only_if_contains.append(layers.replace("*", str(block_id)))
-            #         else:
-            #             expanded_only_if_contains.append(layers)
-            
-            #     self.only_if_contains = expanded_only_if_contains
-            #     # import pdb; pdb.set_trace()
-            #     print(self.only_if_contains)
-            # if isinstance(self.only_if_contains, List):
             def process_selective_layers ():
                 expanded_only_if_contains = []
-                transformer_block_handles = base_model.get_transformer_block_names()
+                # Ensure base_model is not None before calling its method
+                if self.base_model_ref is not None:
+                    base_model_instance = self.base_model_ref()
+                    if base_model_instance is not None:
+                        transformer_block_handles = base_model_instance.get_transformer_block_names()
+                    else:
+                        transformer_block_handles = [] # Fallback if ref is dead
+                else:
+                    transformer_block_handles = [] # Fallback if base_model_ref is None
+
                 for layer in self.only_if_contains:
                     for handle in transformer_block_handles:
                         module_list = getattr(root_module, handle) 
@@ -336,8 +351,13 @@ class LoRASpecialNetwork(ToolkitNetworkMixin, LoRANetwork):
 
             elif isinstance(self.only_if_contains, str): ## it will be a path to the txt file
                 layer_regex_path = Path(self.only_if_contains)
-                self.only_if_contains = layer_regex_path.read_text(encoding="utf-8").splitlines()
-                process_selective_layers()
+                if layer_regex_path.exists():
+                    self.only_if_contains = layer_regex_path.read_text(encoding="utf-8").splitlines()
+                    process_selective_layers()
+                else:
+                    print(f"Warning: only_if_contains path '{self.only_if_contains}' does not exist. Skipping selective layers.")
+                    self.only_if_contains = None # Clear if file not found
+
 
             #############
 
@@ -377,7 +397,7 @@ class LoRASpecialNetwork(ToolkitNetworkMixin, LoRANetwork):
                         lora_name = [x for x in lora_name if x and x != ""]
                         lora_name = ".".join(lora_name)
                         # if it doesnt have a name, it wil have two dots
-                        lora_name.replace("..", ".")
+                        lora_name = lora_name.replace("..", ".") # Corrected: use lora_name here
                         clean_name = lora_name
                         if self.peft_format:
                             # we replace this on saving
@@ -395,13 +415,20 @@ class LoRASpecialNetwork(ToolkitNetworkMixin, LoRANetwork):
                         
                         if self.transformer_only and is_unet:
                             transformer_block_names = None
-                            if base_model is not None:
-                                transformer_block_names = base_model.get_transformer_block_names()
-                            
-                            if transformer_block_names is not None:
-                                if not any([name in lora_name for name in transformer_block_names]):
-                                    skip = True
+                            # Ensure base_model is not None before calling its method
+                            if self.base_model_ref is not None:
+                                base_model_instance = self.base_model_ref()
+                                if base_model_instance is not None:
+                                    transformer_block_names = base_model_instance.get_transformer_block_names()
+                                else:
+                                    transformer_block_names = []
                             else:
+                                transformer_block_names = []
+                            
+                            if transformer_block_names is not None and any(transformer_block_names): # Check if list is not empty
+                                if not any([name_part in lora_name for name_part in transformer_block_names]):
+                                    skip = True
+                            else: # Fallback if transformer_block_names is not available or empty
                                 if self.is_pixart:
                                     if "transformer_blocks" not in lora_name:
                                         skip = True
@@ -431,8 +458,15 @@ class LoRASpecialNetwork(ToolkitNetworkMixin, LoRANetwork):
                         if (is_linear or is_conv2d) and not skip:
 
                             if self.only_if_contains is not None:
-                                if not any([word in clean_name for word in self.only_if_contains]) and not any([word in lora_name for word in self.only_if_contains]):
-                                    continue
+                                # Ensure self.only_if_contains is iterable
+                                if not isinstance(self.only_if_contains, (list, tuple)):
+                                    # If it somehow got set to a non-iterable, clear it or log error
+                                    print(f"Warning: self.only_if_contains is not a list/tuple: {self.only_if_contains}. Clearing.")
+                                    self.only_if_contains = None
+                                
+                                if self.only_if_contains: # Check if list is not empty
+                                    if not any([word in clean_name for word in self.only_if_contains]) and not any([word in lora_name for word in self.only_if_contains]):
+                                        continue
 
                             dim = None
                             alpha = None
@@ -475,6 +509,10 @@ class LoRASpecialNetwork(ToolkitNetworkMixin, LoRANetwork):
                                 network=self,
                                 parent=module,
                                 use_bias=use_bias,
+                                # --- START LoRA+ additions to LoRAModule init ---
+                                loraplus_enabled=self.loraplus_enabled,
+                                loraplus_lambda_lr=self.loraplus_lambda_lr,
+                                # --- END LoRA+ additions ---
                                 **module_kwargs
                             )
                             loras.append(lora)
@@ -601,18 +639,410 @@ class LoRASpecialNetwork(ToolkitNetworkMixin, LoRANetwork):
                 unet.conv_out = self.unet_conv_out
 
     def prepare_optimizer_params(self, text_encoder_lr, unet_lr, default_lr):
-        # call Lora prepare_optimizer_params
-        all_params = super().prepare_optimizer_params(text_encoder_lr, unet_lr, default_lr)
+        # --- START LoRA+ additions to prepare_optimizer_params ---
+        if self.loraplus_enabled:
+            print(f"LoRA+ enabled: Applying different learning rates for LoRA_A (down) and LoRA_B (up) with lambda_lr={self.loraplus_lambda_lr}.")
+            optimizer_grouped_parameters = []
 
-        if self.full_train_in_out:
-            base_model = self.base_model_ref() if self.base_model_ref is not None else None
-            if self.is_pixart or self.is_auraflow or self.is_flux or (base_model is not None and base_model.arch == "wan21"):
-                all_params.append({"lr": unet_lr, "params": list(self.transformer_pos_embed.parameters())})
-                all_params.append({"lr": unet_lr, "params": list(self.transformer_proj_out.parameters())})
+            # Parameters for LoRA_down (A matrix) and LoRA_up (B matrix)
+            lora_down_params = []
+            lora_up_params = []
+            
+            # Parameters for other network-specific components that don't fit A/B model (e.g., DoRA's magnitude)
+            other_lora_params = []
+
+            for lora_module in self.text_encoder_loras + self.unet_loras:
+                # Standard LoRA/LoCon parameters
+                if hasattr(lora_module, 'lora_down') and lora_module.lora_down is not None:
+                    lora_down_params.extend(lora_module.lora_down.parameters())
+                if hasattr(lorora_module, 'lora_up') and lora_module.lora_up is not None:
+                    lora_up_params.extend(lora_module.lora_up.parameters())
+                
+                # DoRA specific parameters (magnitude)
+                if isinstance(lora_module, DoRAModule) and hasattr(lora_module, 'magnitude'):
+                    if lora_module.magnitude is not None:
+                        other_lora_params.append(lora_module.magnitude)
+                
+                # LoKR specific parameters
+                if isinstance(lora_module, LokrModule):
+                    # For LoKR, lokr_w1 (and w1_a) can be considered the 'down' part (A)
+                    # and lokr_w2 (and w2_a) as the 'up' part (B) for LoRA+ analogy.
+                    if hasattr(lora_module, 'lokr_w1') and lora_module.lokr_w1 is not None:
+                        lora_down_params.extend(lora_module.lokr_w1.parameters())
+                    if hasattr(lora_module, 'lokr_w1_a') and lora_module.lokr_w1_a is not None:
+                        lora_down_params.extend(lora_module.lokr_w1_a.parameters()) # If present
+                    
+                    if hasattr(lora_module, 'lokr_w2') and lora_module.lokr_w2 is not None:
+                        lora_up_params.extend(lora_module.lokr_w2.parameters())
+                    if hasattr(lora_module, 'lokr_w2_a') and lora_module.lokr_w2_a is not None:
+                        lora_up_params.extend(lora_module.lokr_w2_a.parameters()) # If present
+                
+                # If there are any other parameters in a LoRA-like module that should be included
+                # and don't fit the A/B split, add them to other_lora_params here.
+
+            # Grouping parameters for optimizer
+            # Apply base LR to 'down' components (A matrix)
+            if len(lora_down_params) > 0:
+                optimizer_grouped_parameters.append({"params": lora_down_params, "lr": default_lr})
+            
+            # Apply lambda-scaled LR to 'up' components (B matrix)
+            if len(lora_up_params) > 0:
+                optimizer_grouped_parameters.append({"params": lora_up_params, "lr": default_lr * self.loraplus_lambda_lr})
+            
+            # Apply base LR to other LoRA-related parameters
+            if len(other_lora_params) > 0:
+                optimizer_grouped_parameters.append({"params": other_lora_params, "lr": default_lr})
+
+            # Add parameters from `full_train_in_out` if enabled, maintaining existing logic
+            # These parameters are not part of the LoRA A/B matrices, so they get the unet_lr
+            if self.full_train_in_out:
+                base_model = self.base_model_ref() if self.base_model_ref is not None else None
+                if self.is_pixart or self.is_auraflow or self.is_flux or (base_model is not None and base_model.arch == "wan21"):
+                    optimizer_grouped_parameters.append({"lr": unet_lr, "params": list(self.transformer_pos_embed.parameters())})
+                    optimizer_grouped_parameters.append({"lr": unet_lr, "params": list(self.transformer_proj_out.parameters())})
+                else:
+                    optimizer_grouped_parameters.append({"lr": unet_lr, "params": list(self.unet_conv_in.parameters())})
+                    optimizer_grouped_parameters.append({"lr": unet_lr, "params": list(self.unet_conv_out.parameters())})
+
+            return optimizer_grouped_parameters
+        else:
+            # If LoRA+ is not enabled, fall back to the original `ToolkitNetworkMixin`'s `prepare_optimizer_params`
+            # This ensures original functionality is undisturbed when LoRA+ is off.
+            return super().prepare_optimizer_params(text_encoder_lr, unet_lr, default_lr)
+        # --- END LoRA+ additions ---
+
+    def get_keymap(self: 'LoRASpecialNetwork', force_weight_mapping=False):
+        use_weight_mapping = False
+
+        if self.is_ssd:
+            keymap_tail = 'ssd'
+            use_weight_mapping = True
+        elif self.is_vega:
+            keymap_tail = 'vega'
+            use_weight_mapping = True
+        elif self.is_sdxl:
+            keymap_tail = 'sdxl'
+        elif self.is_v2:
+            keymap_tail = 'sd2'
+        else:
+            keymap_tail = 'sd1'
+            # todo double check this
+            # use_weight_mapping = True
+
+        if force_weight_mapping:
+            use_weight_mapping = True
+
+        # load keymap
+        keymap_name = f"stable_diffusion_locon_{keymap_tail}.json"
+        if use_weight_mapping:
+            keymap_name = f"stable_diffusion_{keymap_tail}.json"
+
+        keymap_path = os.path.join(KEYMAPS_ROOT, keymap_name)
+
+        keymap = None
+        # check if file exists
+        if os.path.exists(keymap_path):
+            with open(keymap_path, 'r') as f:
+                keymap = json.load(f)['ldm_diffusers_keymap']
+
+        if use_weight_mapping and keymap is not None:
+            # get keymap from weights
+            keymap = get_lora_keymap_from_model_keymap(keymap)
+
+        # upgrade keymaps for DoRA
+        if self.network_type.lower() == 'dora':
+            if keymap is not None:
+                new_keymap = {}
+                for ldm_key, diffusers_key in keymap.items():
+                    ldm_key = ldm_key.replace('.alpha', '.magnitude')
+                    # ldm_key = ldm_key.replace('.lora_down.weight', '.lora_down')
+                    # ldm_key = ldm_key.replace('.lora_up.weight', '.lora_up')
+
+                    diffusers_key = diffusers_key.replace('.alpha', '.magnitude')
+                    # diffusers_key = diffusers_key.replace('.lora_down.weight', '.lora_down')
+                    # diffusers_key = diffusers_key.replace('.lora_up.weight', '.lora_up')
+
+                    new_keymap[ldm_key] = diffusers_key
+
+                keymap = new_keymap
+
+        return keymap
+    
+    def get_state_dict(self: 'LoRASpecialNetwork', extra_state_dict=None, dtype=torch.float16):
+        keymap = self.get_keymap()
+
+        save_keymap = {}
+        if keymap is not None:
+            for ldm_key, diffusers_key in keymap.items():
+                #  invert them
+                save_keymap[diffusers_key] = ldm_key
+
+        state_dict = self.state_dict()
+        save_dict = OrderedDict()
+
+        for key in list(state_dict.keys()):
+            v = state_dict[key]
+            v = v.detach().clone().to("cpu").to(dtype)
+            save_key = save_keymap[key] if key in save_keymap else key
+            save_dict[save_key] = v
+            del state_dict[key]
+
+        if extra_state_dict is not None:
+            # add extra items to state dict
+            for key in list(extra_state_dict.keys()):
+                v = extra_state_dict[key]
+                v = v.detach().clone().to("cpu").to(dtype)
+                save_dict[key] = v
+
+        if self.peft_format:
+            # lora_down = lora_A
+            # lora_up = lora_B
+            # no alpha
+
+            new_save_dict = {}
+            for key, value in save_dict.items():
+                if key.endswith('.alpha'):
+                    continue
+                new_key = key
+                new_key = new_key.replace('lora_down', 'lora_A')
+                new_key = new_key.replace('lora_up', 'lora_B')
+                # replace all $$ with .
+                new_key = new_key.replace('$$', '.')
+                new_save_dict[new_key] = value
+
+            save_dict = new_save_dict
+        
+                
+        if self.network_type.lower() == "lokr":
+            new_save_dict = {}
+            for key, value in save_dict.items():
+                # lora_transformer_transformer_blocks_7_attn_to_v.lokr_w1 to lycoris_transformer_blocks_7_attn_to_v.lokr_w1
+                new_key = key
+                new_key = new_key.replace('lora_transformer_', 'lycoris_')
+                new_save_dict[new_key] = value
+
+            save_dict = new_save_dict
+        
+        if self.base_model_ref is not None:
+            base_model_instance = self.base_model_ref()
+            if base_model_instance is not None:
+                save_dict = base_model_instance.convert_lora_weights_before_save(save_dict)
+        return save_dict
+
+    def save_weights(
+            self: 'LoRASpecialNetwork',
+            file, dtype=torch.float16,
+            metadata=None,
+            extra_state_dict: Optional[OrderedDict] = None
+    ):
+        save_dict = self.get_state_dict(extra_state_dict=extra_state_dict, dtype=dtype)
+        
+        if metadata is not None and len(metadata) == 0:
+            metadata = None
+
+        if metadata is None:
+            metadata = OrderedDict()
+        metadata = add_model_hash_to_meta(save_dict, metadata)
+        if os.path.splitext(file)[1] == ".safetensors":
+            from safetensors.torch import save_file
+            save_file(save_dict, file, metadata)
+        else:
+            torch.save(save_dict, file)
+
+    def load_weights(self: 'LoRASpecialNetwork', file, force_weight_mapping=False):
+        # allows us to save and load to and from ldm weights
+        keymap = self.get_keymap(force_weight_mapping)
+        keymap = {} if keymap is None else keymap
+
+        if isinstance(file, str):
+            if os.path.splitext(file)[1] == ".safetensors":
+                from safetensors.torch import load_file
+
+                weights_sd = load_file(file)
             else:
-                all_params.append({"lr": unet_lr, "params": list(self.unet_conv_in.parameters())})
-                all_params.append({"lr": unet_lr, "params": list(self.unet_conv_out.parameters())})
+                weights_sd = torch.load(file, map_location="cpu")
+        else:
+            # probably a state dict
+            weights_sd = file
+        
+        if self.base_model_ref is not None:
+            base_model_instance = self.base_model_ref()
+            if base_model_instance is not None:
+                weights_sd = base_model_instance.convert_lora_weights_before_load(weights_sd)
 
-        return all_params
+        load_sd = OrderedDict()
+        for key, value in weights_sd.items():
+            load_key = keymap[key] if key in keymap else key
+            # replace old double __ with single _
+            if self.is_pixart:
+                load_key = load_key.replace('__', '_')
 
+            if self.peft_format:
+                # lora_down = lora_A
+                # lora_up = lora_B
+                # no alpha
+                if load_key.endswith('.alpha'):
+                    continue
+                load_key = load_key.replace('lora_A', 'lora_down')
+                load_key = load_key.replace('lora_B', 'lora_up')
+                # replace all . with $$
+                load_key = load_key.replace('.', '$$')
+                load_key = load_key.replace('$$lora_down$$', '.lora_down.')
+                load_key = load_key.replace('$$lora_up$$', '.lora_up.')
+            
+            if self.network_type.lower() == "lokr":
+                # lora_transformer_transformer_blocks_7_attn_to_v.lokr_w1 to lycoris_transformer_blocks_7_attn_to_v.lokr_w1
+                load_key = load_key.replace('lycoris_', 'lora_transformer_')
 
+            load_sd[load_key] = value
+
+        # extract extra items from state dict
+        current_state_dict = self.state_dict()
+        extra_dict = OrderedDict()
+        to_delete = []
+        for key in list(load_sd.keys()):
+            if key not in current_state_dict:
+                extra_dict[key] = load_sd[key]
+                to_delete.append(key)
+        for key in to_delete:
+            del load_sd[key]
+
+        print(f"Missing keys: {to_delete}")
+        if len(to_delete) > 0 and self.is_v1 and not force_weight_mapping and not (
+                len(to_delete) == 1 and 'emb_params' in to_delete):
+            print(" Attempting to load with forced keymap")
+            return self.load_weights(file, force_weight_mapping=True)
+
+        info = self.load_state_dict(load_sd, False)
+        if len(extra_dict.keys()) == 0:
+            extra_dict = None
+        return extra_dict
+
+    @torch.no_grad()
+    def _update_torch_multiplier(self: 'LoRASpecialNetwork'):
+        # builds a tensor for fast usage in the forward pass of the network modules
+        # without having to set it in every single module every time it changes
+        multiplier = self._multiplier
+        # get first module
+        try:
+            first_module = self.get_all_modules()[0]
+        except IndexError:
+            raise ValueError("There are not any lora modules in this network. Check your config and try again")
+        
+        if hasattr(first_module, 'lora_down'):
+            device = first_module.lora_down.weight.device
+            dtype = first_module.lora_down.weight.dtype
+        elif hasattr(first_module, 'lokr_w1'):
+            device = first_module.lokr_w1.device
+            dtype = first_module.lokr_w1.dtype
+        elif hasattr(first_module, 'lokr_w1_a'):
+            device = first_module.lokr_w1_a.device
+            dtype = first_module.lokr_w1_a.dtype
+        else:
+            raise ValueError("Unknown module type")
+        with torch.no_grad():
+            tensor_multiplier = None
+            if isinstance(multiplier, int) or isinstance(multiplier, float):
+                tensor_multiplier = torch.tensor((multiplier,)).to(device, dtype=dtype)
+            elif isinstance(multiplier, list):
+                tensor_multiplier = torch.tensor(multiplier).to(device, dtype=dtype)
+            elif isinstance(multiplier, torch.Tensor):
+                tensor_multiplier = multiplier.clone().detach().to(device, dtype=dtype)
+
+            self.torch_multiplier = tensor_multiplier.clone().detach()
+
+    @property
+    def multiplier(self) -> Union[float, List[float], List[List[float]]]:
+        return self._multiplier
+
+    @multiplier.setter
+    def multiplier(self, value: Union[float, List[float], List[List[float]]]):
+        # it takes time to update all the multipliers, so we only do it if the value has changed
+        if self._multiplier == value:
+            return
+        # if we are setting a single value but have a list, keep the list if every item is the same as value
+        self._multiplier = value
+        self._update_torch_multiplier()
+
+    # called when the context manager is entered
+    # ie: with network:
+    def __enter__(self: 'LoRASpecialNetwork'):
+        self.is_active = True
+
+    def __exit__(self: 'LoRASpecialNetwork', exc_type, exc_value, tb):
+        self.is_active = False
+
+    def force_to(self: 'LoRASpecialNetwork', device, dtype):
+        self.to(device, dtype)
+        loras = []
+        if hasattr(self, 'unet_loras'):
+            loras += self.unet_loras
+        if hasattr(self, 'text_encoder_loras'):
+            loras += self.text_encoder_loras
+        for lora in loras:
+            lora.to(device, dtype)
+
+    def get_all_modules(self: 'LoRASpecialNetwork') -> List['LoRAModule']:
+        loras = []
+        if hasattr(self, 'unet_loras'):
+            loras += self.unet_loras
+        if hasattr(self, 'text_encoder_loras'):
+            loras += self.text_encoder_loras
+        return loras
+
+    def _update_checkpointing(self: 'LoRASpecialNetwork'):
+        for module in self.get_all_modules():
+            if self.is_checkpointing:
+                module.enable_gradient_checkpointing()
+            else:
+                module.disable_gradient_checkpointing()
+
+    def enable_gradient_checkpointing(self: 'LoRASpecialNetwork'):
+        # not supported
+        self.is_checkpointing = True
+        self._update_checkpointing()
+
+    def disable_gradient_checkpointing(self: 'LoRASpecialNetwork'):
+        # not supported
+        self.is_checkpointing = False
+        self._update_checkpointing()
+
+    def merge_in(self: 'LoRASpecialNetwork', merge_weight=1.0):
+        if self.network_type.lower() == 'dora':
+            return
+        self.is_merged_in = True
+        for module in self.get_all_modules():
+            module.merge_in(merge_weight)
+
+    def merge_out(self: 'LoRASpecialNetwork', merge_weight=1.0):
+        if not self.is_merged_in:
+            return
+        self.is_merged_in = False
+        for module in self.get_all_modules():
+            module.merge_out(merge_weight)
+
+    def extract_weight(
+            self: 'LoRASpecialNetwork',
+            extract_mode: str = "existing", # Use str for Literal for older Python versions
+            extract_mode_param: Union[int, float] = None,
+    ):
+        if extract_mode_param is None:
+            raise ValueError("extract_mode_param must be set")
+        for module in tqdm(self.get_all_modules(), desc="Extracting weights"):
+            module.extract_weight(
+                extract_mode=extract_mode,
+                extract_mode_param=extract_mode_param
+            )
+
+    def setup_lorm(self: 'LoRASpecialNetwork', state_dict: Optional[Dict[str, Any]] = None):
+        for module in tqdm(self.get_all_modules(), desc="Extracting LoRM"):
+            module.setup_lorm(state_dict=state_dict)
+
+    def calculate_lorem_parameter_reduction(self: 'LoRASpecialNetwork'):
+        params_reduced = 0
+        for module in self.get_all_modules():
+            num_orig_module_params = count_parameters(module.org_module[0])
+            num_lorem_params = count_parameters(module.lora_down) + count_parameters(module.lora_up)
+            params_reduced += (num_orig_module_params - num_lorem_params)
+
+        return params_reduced
