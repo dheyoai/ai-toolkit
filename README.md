@@ -398,3 +398,39 @@ CUDA_VISIBLE_DEVICES=1 python3 inference_qwen_image_lora.py --model_path "Qwen/Q
 --prompts_path <your_prompts_txt_file>.txt \ \
 --aspect_ratio "16:9"
 ```
+
+
+
+## Distributed Training Walk-Through
+
+### DDP Configuration:
+
+```yaml
+{
+  "compute_environment": "LOCAL_MACHINE",
+  "debug": false,
+  "distributed_type": "MULTI_GPU",
+  "downcast_bf16": false,
+  "enable_cpu_affinity": false,
+  "machine_rank": 0,
+  "main_training_function": "main",
+  "mixed_precision": "bf16",
+  "num_machines": 1,
+  "num_processes": 2, # 👈 change this according to the number of GPUs you have!!!!!!!!!!!
+  "rdzv_backend": "static",
+  "same_network": false,
+  "tpu_use_cluster": false,
+  "tpu_use_sudo": false,
+  "use_cpu": false
+}
+```
+
+### Run Distributed Training:
+
+```bash
+HIP_VISIBLE_DEVICES=0,1,2,3 AITK_JOB_ID=7656 accelerate launch --config_file distributed_training_configs/ddp.yaml run.py <path/to/config>
+```
+
+### Notes
+- The batch_size in your config is now your per device batch size, NOT global batch size
+- The number of steps you give will be divided by num_processes
