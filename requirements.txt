@@ -35,3 +35,4 @@ einops
 accelerate
 omegaconf
 redis
+boto3

@@ -146,3 +146,68 @@ s3://dheyo-generations/
             └── output_{uuid2}.png
 ```
 
+## Integration with Dwarpaal
+
+1. **Clone the repository**:
+   ```bash
+   git clone <repository-url>
+   cd ai-toolkit/inference_toolkit
+   ```
+
+2. **Create and Activate Virtual Environment**:
+   ```bash
+   python3 -m venv aitool
+   source aitool/bin/activate
+   ```
+
+3. **Install dependencies**:
+   
+   **AMD:**
+   ```bash
+   uv pip install --pre torch torchvision torchaudio --index-url https://download.pytorch.org/whl/nightly/rocm6.4
+   pip install -r ../requirements.txt
+   ```
+   
+   **NVIDIA:**
+   ```bash
+   pip install -r ../requirements.txt
+   ```
+
+4. **Set Environment Variables**:
+   
+   Edit the file called `setup_env.sh` with the following content:
+   ```bash
+   # Redis Configuration
+   export REDIS_HOST=your-redis-host
+   export REDIS_PORT=6379
+   export REDIS_PASSWORD='your-redis-password'
+   export REDIS_DB=0
+
+   # Redis Queue Names
+   export REDIS_REQUEST_QUEUE=lora_generations
+   export REDIS_RESPONSE_QUEUE=generations_status
+   export REDIS_TIMEOUT="5"
+
+   # AWS S3 Configuration
+   export UPLOADER_TYPE="s3"
+   export AWS_ACCESS_KEY_ID=your-access-key-id
+   export AWS_SECRET_ACCESS_KEY=your-secret-access-key
+   export AWS_DEFAULT_REGION=us-west-1
+   export S3_BUCKET_NAME=dheyo-generations
+   export S3_KEY_PREFIX="images"
+
+   # Default Directories
+   export DEFAULT_OUTPUT_DIR="/dheyo/lora-infer/outputs"
+   export DEFAULT_CACHE_DIR="/dheyo/lora-infer/cache"
+   ```
+   
+   Then source the file:
+   ```bash
+   source setup_env.sh
+   ```
+
+5. **Run Consumer**:
+   ```bash
+   cd tests
+   HIP_VISIBLE_DEVICES=2 python3 consumer.py
+   ```
