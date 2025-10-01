@@ -1,4 +1,5 @@
 import shutil
+import gc
 from pathlib import Path
 from typing import List, Dict, Any
 from utils.logger import setup_logger
@@ -48,6 +49,34 @@ class Cleanup:
                 
         except Exception as e:
             logger.warning(f"Cleanup failed (non-critical): {str(e)}")
+
+    def cleanup_cuda_memory(self):
+        try:
+            gc.collect()
+
+            if not hasattr(torch, "cuda") or not torch.cuda.is_available():
+                return
+
+            try:
+                torch.cuda.synchronize()
+            except Exception:
+                pass
+
+            try:
+                torch.cuda.empty_cache()
+            except Exception:
+                pass
+
+            try:
+                if hasattr(torch.cuda, "ipc_collect"):
+                    torch.cuda.ipc_collect()
+            except Exception:
+                pass
+
+            logger.info("CUDA device memory cleanup attempted after response push")
+        except Exception as e:
+            # Never raise from cleanup
+            logger.debug(f"CUDA cleanup skipped/failed: {str(e)}")
     
     def _validate_request(self, job_request: Dict[str, Any]):
         if not isinstance(job_request, dict):
