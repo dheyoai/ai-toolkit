@@ -52,6 +52,7 @@ class Cleanup:
 
     def cleanup_cuda_memory(self):
         try:
+            import torch
             gc.collect()
 
             if not hasattr(torch, "cuda") or not torch.cuda.is_available():
