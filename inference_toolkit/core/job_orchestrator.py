@@ -147,6 +147,11 @@ class JobOrchestrator:
         finally:
             self._save_job_status(job_state)
             self._push_response(job_state, job_request)
+            try:
+                cleanup = Cleanup()
+                cleanup.cleanup_cuda_memory()
+            except Exception:
+                pass
     
     def _update_job_status(self, job_state: Dict[str, Any], status: JobStatus):
         job_state["status"] = status.value
