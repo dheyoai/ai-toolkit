@@ -27,6 +27,33 @@ from toolkit.print import print_acc, setup_log_to_file
 accelerator = get_accelerator()
 
 
+def _free_cuda_memory():
+    try:
+        import gc
+        gc.collect()
+    except Exception:
+        pass
+
+    try:
+        import torch
+        if torch.cuda.is_available():
+            try:
+                torch.cuda.synchronize()
+            except Exception:
+                pass
+            try:
+                torch.cuda.empty_cache()
+            except Exception:
+                pass
+            try:
+                torch.cuda.ipc_collect()
+            except Exception:
+                pass
+    except Exception:
+        # Torch might not be installed in some CPU-only flows
+        pass
+
+
 def print_end_message(jobs_completed, jobs_failed):
     if not accelerator.is_main_process:
         return
@@ -114,6 +141,14 @@ def main():
             if not args.recover:
                 print_end_message(jobs_completed, jobs_failed)
                 raise e
+        finally:
+            _free_cuda_memory()
+            try:
+                del job
+            except Exception:
+                pass
+
+    _free_cuda_memory()
 
 
 if __name__ == '__main__':
